@@ -47,7 +47,7 @@ describe('dev-port-allocator executable', () => {
       }
     ).trim();
 
-    const expected = deriveDevPort('/workspace/my-app');
+    const expected = deriveDevPort('/workspace/my-app', 'dev');
     expect(output).toBe(expected);
   });
 

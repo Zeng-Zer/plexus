@@ -93,8 +93,8 @@ instead of handing it back unchecked:
 Use these commands exactly:
 
 - Dev server: `bun run dev`
-- Dev stack for agents (background, worktree-safe): `bun run dev:agent`
-- Stop the agent dev stack: `bun run dev:stop`
+- Dev stack for agents (background, worktree-safe): `bun run dev:agent` (or `bun run dev:agent [target]`, e.g. `dev:pglite`, `dev:full`)
+- Stop the agent dev stack: `bun run dev:stop` (or `bun run dev:stop [target]`)
 - Dev port: `PORT=$(bun run dev:get:port)`
 - Dev DB path: `DB_PATH=$(bun run dev:get:db_path)`
 - Tests: `bun run test`
@@ -104,7 +104,7 @@ Use these commands exactly:
 
 Notes:
 - `bun run dev` derives the backend port from the worktree name and runs the frontend watcher.
-- `bun run dev:agent` boots the full stack detached and returns once healthy (unlike `dev:full`, which runs in the foreground and never returns); use it when an agent needs a running instance to test against.
+- `bun run dev:agent` boots or attaches to a workspace script target (defaults to `dev:full`), managed by Paseo when available with automatic log streaming, and falling back seamlessly to direct background process execution for non-Paseo environments. Use `--detach` to return immediately once healthy.
 - `bun test` is intentionally blocked. Use `bun run test`.
 
 ## Project overview

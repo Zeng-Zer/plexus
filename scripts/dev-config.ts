@@ -10,13 +10,22 @@
 import { join, basename } from 'path';
 import { tmpdir } from 'os';
 import { deriveDevPort } from './dev-port-allocator';
+import { isPaseoScriptAvailable, getPaseoScriptStatus } from './lib/paseo';
 
 const dirName = basename(process.cwd());
 
-// --- Port (same logic as dev.ts) ---
-function getPort(): string {
+// --- Port (check Paseo status first, fallback to deriveDevPort) ---
+function getPort(target = 'dev:full'): string {
   if (process.env.PORT) return process.env.PORT;
-  return deriveDevPort();
+
+  if (isPaseoScriptAvailable(target)) {
+    const status = getPaseoScriptStatus(target) ?? getPaseoScriptStatus('dev');
+    if (status?.port) {
+      return String(status.port);
+    }
+  }
+
+  return deriveDevPort(process.cwd(), target);
 }
 
 // --- DB path (same logic as dev.ts) ---

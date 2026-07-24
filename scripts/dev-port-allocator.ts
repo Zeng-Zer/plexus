@@ -18,25 +18,28 @@ import { basename } from 'path';
 
 /**
  * Derives a stable, deterministic TCP port number (10000-19999) based on the
- * worktree directory name.
+ * worktree directory name and optional service script name.
  */
-export function deriveDevPort(cwd = process.cwd()): string {
+export function deriveDevPort(cwd = process.cwd(), scriptName = ''): string {
   if (process.env.PORT) return process.env.PORT;
-  const dirName = basename(cwd);
+  const key = scriptName ? `${basename(cwd)}:${scriptName}` : basename(cwd);
   let hash = 5381;
-  for (let i = 0; i < dirName.length; i++) {
-    hash = (hash * 33) ^ dirName.charCodeAt(i);
+  for (let i = 0; i < key.length; i++) {
+    hash = (hash * 33) ^ key.charCodeAt(i);
   }
   return String(10000 + (Math.abs(hash) % 10000));
 }
 
 if (import.meta.main) {
-  // Paseo passes worktree path as 4th positional argument (argv[5]) or in PASEO_WORKTREE_PATH
+  // Paseo passes positional args: [scriptName, workspaceId, branchName, worktreePath]
+  // process.argv[2] is scriptName
+  const scriptName =
+    process.env.PASEO_SCRIPTNAME || (process.argv.length >= 3 ? process.argv[2] : '');
   const worktreePath =
     process.env.PASEO_WORKTREE_PATH ||
     (process.argv.length >= 6 ? process.argv[5] : undefined) ||
     process.cwd();
 
-  const port = deriveDevPort(worktreePath);
+  const port = deriveDevPort(worktreePath, scriptName);
   console.log(port);
 }
