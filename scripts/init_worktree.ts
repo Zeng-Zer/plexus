@@ -22,6 +22,19 @@ const commands: readonly Command[] = [
   { label: 'Trust mise configuration', cmd: ['mise', 'trust'] },
   { label: 'Install Bun dependencies', cmd: ['bun', 'install'] },
   { label: 'Build frontend', cmd: ['bun', 'run', 'build:frontend'] },
+  {
+    label: 'Update Agent Skills',
+    // Using `|| true` to ensure network failures don't crash the worktree setup
+    cmd: ['sh', '-c', 'bunx --bun skills experimental_install || true'],
+  },
+  {
+    label: 'Auto-commit updated skills (if changed)',
+    cmd: [
+      'sh',
+      '-c',
+      'git add .agents/skills/ && git diff-index --quiet HEAD || git commit -m "chore(skills): auto-update agent skills" || true',
+    ],
+  },
 ];
 
 function quoteArg(arg: string): string {
