@@ -37,6 +37,85 @@ async function collectFormatStreamEvents(
 }
 
 describe('Codex CLI namespace tool flattening', () => {
+  test('preserves JSON-looking text inside streamed tool arguments', async () => {
+    const transformer = new ResponsesTransformer();
+    const events = await collectFormatStreamEvents(transformer, [
+      {
+        id: 'resp_1',
+        model: 'gpt-5.6',
+        created: 1,
+        delta: {
+          tool_calls: [{ index: 0, id: 'call_1', function: { name: 'run', arguments: '' } }],
+        },
+        finish_reason: null,
+      },
+      {
+        id: 'resp_1',
+        model: 'gpt-5.6',
+        created: 1,
+        delta: { tool_calls: [{ index: 0, function: { arguments: '{"command":"before ' } }] },
+        finish_reason: null,
+      },
+      {
+        id: 'resp_1',
+        model: 'gpt-5.6',
+        created: 1,
+        delta: { tool_calls: [{ index: 0, function: { arguments: '{' + '}' } }] },
+        finish_reason: null,
+      },
+      {
+        id: 'resp_1',
+        model: 'gpt-5.6',
+        created: 1,
+        delta: { tool_calls: [{ index: 0, function: { arguments: ' after"}' } }] },
+        finish_reason: null,
+      },
+      { id: 'resp_1', model: 'gpt-5.6', created: 1, delta: null, finish_reason: 'tool_calls' },
+    ]);
+
+    const doneEvent = events.find(
+      (event) => event.type === 'response.output_item.done' && event.item?.type === 'function_call'
+    );
+    expect(JSON.parse(doneEvent.item.arguments)).toEqual({
+      command: 'before ' + '{' + '}' + ' after',
+    });
+  });
+
+  test('accepts a complete argument snapshot after leading whitespace', async () => {
+    const transformer = new ResponsesTransformer();
+    const events = await collectFormatStreamEvents(transformer, [
+      {
+        id: 'resp_1',
+        model: 'gpt-5.6',
+        created: 1,
+        delta: {
+          tool_calls: [{ index: 0, id: 'call_1', function: { name: 'run', arguments: '' } }],
+        },
+        finish_reason: null,
+      },
+      {
+        id: 'resp_1',
+        model: 'gpt-5.6',
+        created: 1,
+        delta: { tool_calls: [{ index: 0, function: { arguments: ' {"command":"fu' } }] },
+        finish_reason: null,
+      },
+      {
+        id: 'resp_1',
+        model: 'gpt-5.6',
+        created: 1,
+        delta: { tool_calls: [{ index: 0, function: { arguments: '{"command":"full"}' } }] },
+        finish_reason: null,
+      },
+      { id: 'resp_1', model: 'gpt-5.6', created: 1, delta: null, finish_reason: 'tool_calls' },
+    ]);
+
+    const doneEvent = events.find(
+      (event) => event.type === 'response.output_item.done' && event.item?.type === 'function_call'
+    );
+    expect(JSON.parse(doneEvent.item.arguments)).toEqual({ command: 'full' });
+  });
+
   test('parseRequest flattens namespace tools to flat function tools', async () => {
     const transformer = new ResponsesTransformer();
     const unified = await transformer.parseRequest({

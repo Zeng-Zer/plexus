@@ -1140,9 +1140,9 @@ export class ResponsesTransformer implements Transformer {
       if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
         try {
           JSON.parse(trimmed);
-          return trimmed;
+          if (!previous || trimmed.startsWith(previous.trimStart())) return trimmed;
         } catch {
-          return previous + delta;
+          // Argument deltas may contain incomplete JSON.
         }
       }
       return previous + delta;
