@@ -194,6 +194,10 @@ export async function buildRequestPayload(
       // request-manager passes for native OAuth routes — Copilot needs it to
       // pick the right endpoint (chat/messages/responses).
       apiType: targetApiType,
+      // The caller's own `anthropic-beta` flags. Merged with REQUIRED_BETAS
+      // rather than discarded, so beta-gated client features (e.g. the advisor
+      // tool) survive the gateway instead of being rejected upstream.
+      callerBetas: request.anthropicBeta,
     });
     (route as any)[NATIVE_OAUTH_STASH] = prepared;
     logger.debug(

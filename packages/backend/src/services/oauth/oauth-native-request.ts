@@ -94,6 +94,35 @@ function resolveOAuthBaseUrl(provider: OAuthProvider, modelId: string): string {
 }
 
 /**
+ * Union the hardcoded `REQUIRED_BETAS` with whatever `anthropic-beta` flags the
+ * caller sent, preserving REQUIRED_BETAS order and appending caller-only flags.
+ *
+ * Why: REQUIRED_BETAS is a hand-maintained snapshot of a genuine Claude Code
+ * request, so it goes stale every time Claude Code ships a new beta-gated
+ * feature. Overwriting the caller's header meant any newer flag was silently
+ * dropped, and Anthropic then rejected the corresponding tool — e.g. a client
+ * sending `advisor-tool-2026-03-01` + `advisor_20260301` got
+ * `tools.N: Input tag 'advisor_20260301' ... does not match any of the expected
+ * tags`, because the gateway stripped the flag that makes that tool legal.
+ *
+ * Merging (not replacing) keeps the masking-critical flags — notably
+ * `oauth-2025-04-20` — which the caller does not send, while letting newer
+ * client betas through without waiting for this constant to be updated.
+ */
+function mergeBetas(callerBetas?: string): string {
+  const merged = [...REQUIRED_BETAS];
+  const seen = new Set(merged);
+  for (const raw of (callerBetas ?? '').split(',')) {
+    const beta = raw.trim();
+    if (beta && !seen.has(beta)) {
+      seen.add(beta);
+      merged.push(beta);
+    }
+  }
+  return merged.join(',');
+}
+
+/**
  * Prepare an Anthropic OAuth request from a native Anthropic `/v1/messages`
  * body. Applies the exact masking sequence `executeRequest` runs today, then
  * returns everything the standard fetch path needs.
@@ -102,7 +131,8 @@ function prepareAnthropicOAuthRequest(
   modelId: string,
   auth: NativeAnthropicAuth,
   nativeBody: any,
-  streaming: boolean
+  streaming: boolean,
+  callerBetas?: string
 ): PreparedOAuthRequest {
   // The token used to GATE masking (not necessarily the auth credential). For
   // the API-key masking route we force the masking's OAuth codepath with the
@@ -145,7 +175,7 @@ function prepareAnthropicOAuthRequest(
     'Content-Type': 'application/json',
     Accept: streaming ? 'text/event-stream' : 'application/json',
     'anthropic-version': '2023-06-01',
-    'anthropic-beta': REQUIRED_BETAS.join(','),
+    'anthropic-beta': mergeBetas(callerBetas),
     ...getStainlessHeaders(),
     // Auth: OAuth → Bearer; masking-API-key → x-api-key (real Anthropic key).
     ...(auth.mode === 'oauth'
@@ -510,10 +540,10 @@ export function prepareOAuthNativeRequest(
   auth: NativeAnthropicAuth,
   nativeBody: any,
   streaming: boolean,
-  options?: { codexPassthrough?: boolean; apiType?: string }
+  options?: { codexPassthrough?: boolean; apiType?: string; callerBetas?: string }
 ): PreparedOAuthRequest {
   if (provider === 'anthropic') {
-    return prepareAnthropicOAuthRequest(modelId, auth, nativeBody, streaming);
+    return prepareAnthropicOAuthRequest(modelId, auth, nativeBody, streaming, options?.callerBetas);
   }
   if (provider === 'openai-codex') {
     if (auth.mode !== 'oauth') {
@@ -615,6 +645,8 @@ export async function prepareNativeOAuthDispatch(params: {
   codexPassthrough?: boolean;
   /** Copilot only: the resolved wire API type (chat/messages/responses). */
   apiType?: string;
+  /** Anthropic only: the caller's raw `anthropic-beta` header, merged with REQUIRED_BETAS. */
+  callerBetas?: string;
 }): Promise<PreparedOAuthRequest> {
   const { provider, modelId, nativeBody, streaming, oauthAccountId, maskingApiKey } = params;
 
@@ -636,5 +668,6 @@ export async function prepareNativeOAuthDispatch(params: {
   return prepareOAuthNativeRequest(provider, modelId, auth, nativeBody, streaming, {
     codexPassthrough: params.codexPassthrough === true,
     apiType: params.apiType,
+    callerBetas: params.callerBetas,
   });
 }
