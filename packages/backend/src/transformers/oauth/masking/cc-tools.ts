@@ -60,6 +60,19 @@ export function stripDescriptionsAndInjectSyntheticTools(
   }
 
   const strippedTools = body.tools.map((t: any) => {
+    // Server-side tools (`bash_20250124`, `web_search_*`, `advisor_20260301`, …)
+    // are identified by a `type` other than "custom", and their schemas are
+    // CLOSED — Anthropic rejects unknown keys with
+    // `tools.N.<type>.description: Extra inputs are not permitted`. They carry
+    // no client-authored description to fingerprint anyway, so there is nothing
+    // to strip. Leave them byte-identical.
+    //
+    // This mirrors the rule `applyClaudeOAuthTransform` already applies in
+    // `oauth-claude.ts` ("Skip built-in tools (they have a `type` field)").
+    const type = typeof t?.type === 'string' ? t.type : undefined;
+    if (type && type !== 'custom') {
+      return t;
+    }
     const note = noteByRenamedName.get(t?.name);
     return { ...t, description: note ?? '' };
   });
