@@ -7,6 +7,7 @@ import { Alias, Provider, Cooldown } from '../../lib/api';
 import { formatMsToMinSec } from '@plexus/shared';
 import { SELECTOR_LABELS } from '../../lib/selectors';
 import { getAliasProviderLabels, getAliasTargetCount } from '../../lib/modelList';
+import { dedupeStrings } from '../../lib/modelOptions';
 
 interface AliasTableRowProps {
   alias: Alias;
@@ -96,7 +97,7 @@ export const AliasTableRow: React.FC<AliasTableRowProps> = ({
         </div>
         {alias.aliases && alias.aliases.length > 0 && (
           <div className="flex flex-col gap-1 mt-1.5 pl-5">
-            {alias.aliases.map((a) => (
+            {dedupeStrings(alias.aliases).map((a) => (
               <span
                 key={a}
                 className="inline-flex items-center gap-1 text-[10px] text-text-muted w-fit"

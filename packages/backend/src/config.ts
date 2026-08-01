@@ -741,6 +741,18 @@ export function findDuplicateAliasTargets(
   return Array.from(duplicates.values());
 }
 
+export function findDuplicateAdditionalAliases(additionalAliases: string[] | undefined): string[] {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+
+  for (const alias of additionalAliases ?? []) {
+    if (seen.has(alias)) duplicates.add(alias);
+    else seen.add(alias);
+  }
+
+  return Array.from(duplicates);
+}
+
 // Shared scope/limit fields applied to every quota-type union member below:
 //  - allowed*/excluded* restrict which provider/model pairs the quota counts
 //    against (see services/scope-match.ts for matching semantics; all-empty
@@ -949,6 +961,14 @@ export const ModelConfigSchema = z
         code: 'custom',
         path: ['target_groups'],
         message: `Duplicate target '${target.provider}/${target.model}' is not allowed`,
+      });
+    }
+
+    for (const alias of findDuplicateAdditionalAliases(data.additional_aliases)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['additional_aliases'],
+        message: `Duplicate additional alias '${alias}' is not allowed`,
       });
     }
   })

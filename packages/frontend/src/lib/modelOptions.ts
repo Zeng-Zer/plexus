@@ -24,6 +24,16 @@ export const dedupeById = <T extends { id: string }>(items: T[]): T[] => {
   });
 };
 
+export const dedupeStrings = (values: string[]): string[] => {
+  const seen = new Set<string>();
+
+  return values.filter((value) => {
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
+};
+
 export const dedupeAliasTargets = (groups: AliasTargetGroup[]): AliasTargetGroup[] => {
   const seen = new Set<string>();
 

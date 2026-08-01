@@ -1,6 +1,6 @@
 import { formatNumber, formatPoints } from './format';
 import { normalizeApiAccessList } from './apiFormats';
-import { dedupeAliasTargets, dedupeById, dedupeModels } from './modelOptions';
+import { dedupeAliasTargets, dedupeById, dedupeModels, dedupeStrings } from './modelOptions';
 
 import type { QuotaCheckerInfo } from '../types/quota';
 
@@ -1155,7 +1155,7 @@ function aliasToConfigPayload(alias: Alias): Record<string, unknown> {
 
   return {
     priority: alias.priority || 'selector',
-    additional_aliases: alias.aliases,
+    additional_aliases: dedupeStrings(alias.aliases ?? []),
     use_image_fallthrough: alias.use_image_fallthrough || false,
     enforce_limits: alias.enforce_limits || false,
     sticky_session: alias.sticky_session ?? true,

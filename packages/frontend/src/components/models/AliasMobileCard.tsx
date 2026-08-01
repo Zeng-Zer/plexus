@@ -7,6 +7,7 @@ import { Switch } from '../ui/Switch';
 import { ModelTypeBadge } from './ModelTypeBadge';
 import type { Alias, Provider, Cooldown } from '../../lib/api';
 import { getAliasProviderLabels, getAliasTargetCount } from '../../lib/modelList';
+import { dedupeStrings } from '../../lib/modelOptions';
 
 interface Props {
   alias: Alias;
@@ -49,7 +50,18 @@ export const AliasMobileCard: React.FC<Props> = ({
   return (
     <article key={alias.id} className="rounded-md border border-border-glass bg-bg-subtle p-3">
       <div className="flex items-start justify-between gap-3">
-        <button type="button" onClick={() => onEdit(alias)} className="min-w-0 flex-1 text-left">
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => onEdit(alias)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onEdit(alias);
+            }
+          }}
+          className="min-w-0 flex-1 cursor-pointer text-left"
+        >
           <div className="flex items-center gap-2">
             <div className="truncate font-heading text-sm font-semibold text-text">{alias.id}</div>
             <CopyButton value={alias.id} size="sm" />
@@ -62,7 +74,7 @@ export const AliasMobileCard: React.FC<Props> = ({
               </span>
             )}
           </div>
-        </button>
+        </div>
         <Button
           variant="ghost"
           size="icon"
@@ -103,7 +115,7 @@ export const AliasMobileCard: React.FC<Props> = ({
           <div className="text-[10px] uppercase tracking-wider text-text-muted">Aliases</div>
           <div className="flex flex-wrap gap-1 font-medium text-text-secondary">
             {alias.aliases?.length
-              ? alias.aliases.map((a) => (
+              ? dedupeStrings(alias.aliases).map((a) => (
                   <span key={a} className="inline-flex items-center gap-1">
                     <span className="text-xs">{a}</span>
                     <CopyButton value={a} size="sm" />
