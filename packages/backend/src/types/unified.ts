@@ -227,6 +227,26 @@ export interface UnifiedImageGenerationCall {
   result: string;
 }
 
+/**
+ * A Responses-API built-in tool-call output item whose execution is deferred
+ * to the CLIENT (`execution: "client"`, e.g. `tool_search_call`) — the model
+ * expects the caller to run the call and continue the turn, mirroring how a
+ * `function_call` works. Carried through the unified layer typed and
+ * untouched (same pattern as UnifiedImageGenerationCall) rather than parsed
+ * into `tool_calls`, since these items are Responses-specific and have no
+ * Chat Completions/Anthropic Messages equivalent. Only populated/consumed by
+ * the Responses transformer (transformers/responses.ts): dropping one of
+ * these instead of re-emitting it natively leaves the client with no signal
+ * that a tool call is pending, so the response looks like a completed turn.
+ */
+export interface UnifiedClientToolCall {
+  type: string;
+  id: string;
+  call_id: string;
+  status?: string;
+  [key: string]: any;
+}
+
 export interface UnifiedChatResponse {
   id: string;
   model: string;
@@ -275,6 +295,13 @@ export interface UnifiedChatResponse {
    * detection counts entries with a non-empty `result` as visible output.
    */
   image_generation_calls?: UnifiedImageGenerationCall[];
+  /**
+   * Client-executed built-in tool-call output items, typed (see
+   * UnifiedClientToolCall). Same pattern as `image_generation_calls`:
+   * responses-facing formatters re-emit them natively so the client sees the
+   * pending call and continues the turn.
+   */
+  client_tool_calls?: UnifiedClientToolCall[];
   annotations?: Annotation[];
   stream?: ReadableStream | any;
   bypassTransformation?: boolean;
@@ -361,6 +388,13 @@ export interface UnifiedChatStreamChunk {
    * skips the paired markdown content delta.
    */
   image_generation_calls?: UnifiedImageGenerationCall[];
+  /**
+   * Client-executed built-in tool-call output items carried typed (see
+   * UnifiedClientToolCall), CHUNK-level like `image_generation_calls` above.
+   * The responses-facing formatStream re-emits these as native output items;
+   * other formatters have no equivalent and simply ignore the field.
+   */
+  client_tool_calls?: UnifiedClientToolCall[];
 }
 
 // Unified Embeddings Request

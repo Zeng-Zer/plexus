@@ -34,7 +34,18 @@ export function detectResponsesApiType(
 
   const hasAdditionalTools =
     Array.isArray(body?.input) && body.input.some((item: any) => item?.type === 'additional_tools');
-  return hasAdditionalTools ? 'responses:lite' : 'responses';
+  // A declared `tool_search` tool is Codex CLI's lazy tool-discovery
+  // mechanism — the defining feature of "lite" mode (the client hasn't sent
+  // its full tool catalog upfront and expects to discover more via a
+  // tool_search_call mid-turn). Recognizing it here, not just
+  // `additional_tools`/the internal header, lets routing correctly prefer
+  // providers that explicitly advertise `responses:lite` support (see
+  // router.ts's subtype-first target matching) for a request that's
+  // genuinely Codex-native, instead of silently defaulting to the base
+  // `responses` type and losing that routing preference.
+  const hasToolSearch =
+    Array.isArray(body?.tools) && body.tools.some((tool: any) => tool?.type === 'tool_search');
+  return hasAdditionalTools || hasToolSearch ? 'responses:lite' : 'responses';
 }
 
 export async function registerResponsesRoute(

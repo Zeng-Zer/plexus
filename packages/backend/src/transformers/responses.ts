@@ -14,6 +14,7 @@ import {
 import {
   UnifiedChatRequest,
   UnifiedChatResponse,
+  UnifiedClientToolCall,
   UnifiedImageGenerationCall,
   UnifiedMessage,
 } from '../types/unified';
@@ -40,6 +41,26 @@ function toUnifiedImageGenerationCall(item: any): UnifiedImageGenerationCall {
     ...(typeof item.status === 'string' ? { status: item.status } : {}),
     result: item.result,
   };
+}
+
+/**
+ * True for a built-in Responses output item whose execution the model has
+ * delegated to the CLIENT (`execution: "client"`, e.g. `tool_search_call`).
+ * These are pending tool calls the caller must act on to continue the turn —
+ * unlike server-executed built-ins (web_search_call, etc.) — so they need the
+ * same "keep this and tell the client" treatment as a function_call rather
+ * than being silently dropped as an unrecognized item type. Keyed on the
+ * `execution` discriminator (not a type allowlist) so future built-in
+ * client-executed tool types are handled automatically.
+ */
+function isClientExecutedToolItem(item: any): item is UnifiedClientToolCall {
+  return (
+    !!item &&
+    typeof item === 'object' &&
+    item.execution === 'client' &&
+    typeof item.call_id === 'string' &&
+    typeof item.type === 'string'
+  );
 }
 
 // Some Responses clients have been observed replaying tool calls with composite
@@ -437,6 +458,14 @@ export class ResponsesTransformer implements Transformer {
           imageGenerationCalls.push(toUnifiedImageGenerationCall(item));
         }
       }
+
+      // Built-in tool-call items whose execution is delegated to the client
+      // (e.g. tool_search_call) — carried typed, untouched, so formatResponse
+      // can re-emit them natively instead of silently dropping a pending
+      // tool call the client is expected to act on.
+      const clientToolCalls: UnifiedClientToolCall[] = (response.output ?? []).filter(
+        isClientExecutedToolItem
+      );
       const content = messageText;
 
       // Collect url_citation annotations from all output_text content parts
@@ -506,6 +535,7 @@ export class ResponsesTransformer implements Transformer {
         ...(imageGenerationCalls.length > 0
           ? { image_generation_calls: imageGenerationCalls }
           : {}),
+        ...(clientToolCalls.length > 0 ? { client_tool_calls: clientToolCalls } : {}),
         usage,
       };
     } else {
@@ -966,6 +996,13 @@ export class ResponsesTransformer implements Transformer {
       });
     }
 
+    // Re-emit typed client-executed tool-call items (e.g. tool_search_call)
+    // natively and untouched, so the client sees the pending call it's
+    // expected to act on to continue the turn.
+    for (const clientToolCall of response.client_tool_calls ?? []) {
+      items.push(clientToolCall as unknown as ResponsesOutputItem);
+    }
+
     // Add main message
     items.push({
       type: 'message',
@@ -1048,6 +1085,10 @@ export class ResponsesTransformer implements Transformer {
     // their response.output_item.done event, so the response.completed
     // fallback below doesn't render them a second time.
     const renderedImageItemIds = new Set<string>();
+    // Client-executed tool-call items (e.g. tool_search_call) already carried
+    // typed from their response.output_item.done event, so the
+    // response.completed fallback below doesn't carry them a second time.
+    const renderedClientToolCallIds = new Set<string>();
     const getToolCallIndex = (data: any): number => {
       const outputIndex =
         typeof data.output_index === 'number' ? (data.output_index as number) : undefined;
@@ -1186,6 +1227,28 @@ export class ResponsesTransformer implements Transformer {
                     finish_reason: null,
                   });
                 }
+              } else if (
+                data.type === 'response.output_item.done' &&
+                isClientExecutedToolItem(data.item)
+              ) {
+                // Built-in tool-call item whose execution the model
+                // delegated to the client (e.g. tool_search_call). Carry it
+                // typed (see UnifiedClientToolCall) and flag it the same as
+                // a function call so `finish_reason` comes out 'tool_calls'
+                // instead of 'stop' — otherwise the client has no signal
+                // that it's expected to act and continue the turn.
+                hasFunctionCall = true;
+                if (typeof data.item.id === 'string') {
+                  renderedClientToolCallIds.add(data.item.id);
+                }
+                controller.enqueue({
+                  id: responseId,
+                  model: responseModel,
+                  created: Math.floor(Date.now() / 1000),
+                  delta: {},
+                  client_tool_calls: [data.item as UnifiedClientToolCall],
+                  finish_reason: null,
+                });
               } else if (data.type === 'response.completed') {
                 // Final chunk with usage data and an OpenAI-compatible finish reason.
                 // `response.completed` includes the full output as a fallback because some
@@ -1193,7 +1256,7 @@ export class ResponsesTransformer implements Transformer {
                 const usage = data.response?.usage;
                 const normalizedUsage = usage ? normalizeOpenAIResponsesUsage(usage) : undefined;
                 const completedResponseHasFunctionCall = data.response?.output?.some(
-                  (item: any) => item?.type === 'function_call'
+                  (item: any) => item?.type === 'function_call' || isClientExecutedToolItem(item)
                 );
                 // Same fallback as function calls above: render any completed
                 // image_generation_call items that only appear in the final
@@ -1214,6 +1277,25 @@ export class ResponsesTransformer implements Transformer {
                       content: imageMarkdown,
                     },
                     image_generation_calls: [toUnifiedImageGenerationCall(item)],
+                    finish_reason: null,
+                  });
+                }
+                // Same fallback for client-executed tool-call items that only
+                // appear in the final response snapshot (some backends omit
+                // the intermediate output_item.done for them, or leave the
+                // final snapshot's output populated where the streamed
+                // events didn't carry it) — skip ones already carried above.
+                for (const item of data.response?.output ?? []) {
+                  if (!isClientExecutedToolItem(item)) continue;
+                  if (typeof item.id === 'string' && renderedClientToolCallIds.has(item.id)) {
+                    continue;
+                  }
+                  controller.enqueue({
+                    id: responseId,
+                    model: responseModel,
+                    created: Math.floor(Date.now() / 1000),
+                    delta: {},
+                    client_tool_calls: [item as UnifiedClientToolCall],
                     finish_reason: null,
                   });
                 }
@@ -1576,6 +1658,32 @@ export class ResponsesTransformer implements Transformer {
       }
     };
 
+    // Re-emits typed client-executed tool-call carries (see
+    // UnifiedClientToolCall in types/unified.ts) as native Responses output
+    // items, untouched. Each item is registered in outputItemsByIndex so the
+    // terminal response.completed's output array includes it — this is the
+    // client's only signal that a tool call (e.g. tool_search_call) is
+    // pending and the turn isn't actually over.
+    const emitClientToolCallItems = (
+      controller: ReadableStreamDefaultController,
+      clientToolCalls: UnifiedClientToolCall[]
+    ) => {
+      for (const clientToolCall of clientToolCalls) {
+        const outputIndex = reserveOutputIndex();
+        sendEvent(controller, {
+          type: 'response.output_item.added',
+          output_index: outputIndex,
+          item: { ...clientToolCall, status: 'in_progress' },
+        });
+        sendEvent(controller, {
+          type: 'response.output_item.done',
+          output_index: outputIndex,
+          item: clientToolCall,
+        });
+        outputItemsByIndex.set(outputIndex, clientToolCall);
+      }
+    };
+
     // `itemStatus` is the terminal status stamped on items that were still
     // in progress when the stream ended. The completed and failed paths keep
     // the pre-existing 'completed' stamp; only the response.incomplete path
@@ -1875,6 +1983,17 @@ export class ResponsesTransformer implements Transformer {
               : [];
             if (typedImageCalls.length > 0) {
               emitImageGenerationCallItems(controller, typedImageCalls);
+            }
+
+            // Typed client-executed tool-call carries (e.g. tool_search_call)
+            // re-emit as NATIVE output items, untouched — these have no
+            // chat-format equivalent to fall back to, so this is the only way
+            // the client learns a tool call is pending.
+            if (
+              Array.isArray(unifiedChunk.client_tool_calls) &&
+              unifiedChunk.client_tool_calls.length > 0
+            ) {
+              emitClientToolCallItems(controller, unifiedChunk.client_tool_calls);
             }
 
             if (reasoningDelta && reasoningDelta.length > 0) {

@@ -61,8 +61,18 @@ function shouldUsePassThrough(
     return false;
   }
 
+  // Only force the transform pipeline when the target fell back to the bare
+  // `responses` type (no explicit Lite support advertised). A target that
+  // matches the `responses:lite` subtype EXACTLY has been deliberately
+  // configured as Codex-native — verified live against both providers
+  // currently marked `responses:lite` (see dispatcher-api-subtype.test.ts):
+  // both correctly parse raw `additional_tools`/`custom`/`namespace` wire
+  // extensions and invoke tools without flattening. That's the whole point
+  // of the subtype: avoid the transform pipeline where the target has opted
+  // in. Providers that only match on the base type haven't made that claim,
+  // so they still get the defensive flatten.
   if (
-    getApiBaseType(targetApiType) === 'responses' &&
+    targetApiType.toLowerCase() === 'responses' &&
     hasCodexResponsesExtensions(request.originalBody)
   ) {
     return false;
@@ -168,6 +178,27 @@ export async function buildRequestPayload(
       `Adapters applied (preDispatch): [${adapters.map((entry) => entry.adapter.name).join(', ')}] ` +
         `for ${route.provider}/${route.model}`
     );
+  }
+
+  // The provider-side `X-OpenAI-Internal-Codex-Responses-Lite` header (set in
+  // setupHeaders/setupProviderHeaders whenever targetApiType is exactly
+  // `responses:lite`) comes with a wire contract both providers currently
+  // configured for the subtype (openlimits, openai-s) enforce with a 400:
+  // `reasoning.context` must be `all_turns`, and `parallel_tool_calls` must
+  // be `false`. Real Codex CLI requests don't reliably satisfy either (see
+  // staging trace b672ebbd — no `reasoning.context` at all, and
+  // `parallel_tool_calls: true`), so normalize both here rather than
+  // trusting the client. Native OAuth routes build their own headers (see
+  // setupHeaders) and never send this header, so they're excluded.
+  if (!nativeOAuth && targetApiType.toLowerCase() === 'responses:lite') {
+    payload = {
+      ...payload,
+      reasoning: {
+        ...(payload.reasoning || {}),
+        context: payload.reasoning?.context ?? 'all_turns',
+      },
+      parallel_tool_calls: false,
+    };
   }
 
   // Native OAuth (currently Anthropic): the payload above is already the correct

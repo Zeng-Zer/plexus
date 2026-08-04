@@ -100,7 +100,15 @@ describe('Dispatcher API subtypes', () => {
     expect(result.payload.model).toBe('upstream-model');
   });
 
-  test('disables pass-through for Responses bodies carrying Codex namespace/custom tool call history', async () => {
+  test('keeps pass-through for an exact responses:lite match even with Codex namespace/custom tool call history', async () => {
+    // Previously this forced the transform pipeline on the (unverified)
+    // assumption that Responses-compatible providers can't handle raw
+    // namespace/custom-tool-call history. Live-tested against both
+    // providers actually configured with the `responses:lite` subtype
+    // (openlimits and real api.openai.com/openai-s): both parse this shape
+    // correctly. A target that matches `responses:lite` EXACTLY has opted
+    // into being trusted with Codex's raw wire extensions — that's the
+    // point of the subtype — so pass-through stays enabled here.
     const dispatcher = new Dispatcher() as any;
     const route = makeRoute([{ type: 'responses', subtype: 'lite' }]);
     const originalBody = {
@@ -135,11 +143,8 @@ describe('Dispatcher API subtypes', () => {
       'responses:lite'
     );
 
-    // Namespace/custom-tool-call history means the raw body can't be
-    // forwarded as-is — most Responses-compatible providers don't understand
-    // these Codex CLI extensions. Pass-through must be disabled so the full
-    // transform pipeline (which flattens/normalizes them) runs instead.
-    expect(result.bypassTransformation).toBe(false);
+    expect(result.bypassTransformation).toBe(true);
+    expect(result.payload.input).toEqual(originalBody.input);
   });
 
   test('keeps pass-through for Responses bodies without Codex namespace/custom tool extensions', async () => {
@@ -212,12 +217,17 @@ describe('Dispatcher API subtypes', () => {
     );
   });
 
-  test('end-to-end: Codex "lite" mode additional_tools reach the upstream Responses provider (staging trace d3a2b5f6)', async () => {
-    // Reproduces the shape of a real staging debug trace where a Codex CLI
-    // `responses:lite` request carried its tool definitions in an
-    // `additional_tools` input item rather than the top-level `tools`
-    // array. Before the fix, the upstream provider received `tools: []`
-    // and hallucinated the tool call as text instead of invoking it.
+  test('end-to-end: Codex "lite" mode additional_tools pass through untouched for an exact responses:lite target (staging trace b672ebbd)', async () => {
+    // Originally reproduced as "staging trace d3a2b5f6" on the (unverified)
+    // assumption that the upstream provider would receive `tools: []` and
+    // hallucinate the tool call as text unless Plexus flattened
+    // `additional_tools` into the top-level `tools` array. Live-tested
+    // against both providers actually configured with the `responses:lite`
+    // subtype (openlimits and real api.openai.com/openai-s, investigating
+    // staging trace b672ebbd): both correctly parse the raw `additional_tools`
+    // item and invoke the declared tool with no flattening needed. A target
+    // that matches `responses:lite` EXACTLY is trusted with Codex's raw wire
+    // extensions, so the body passes through untouched.
     const dispatcher = new Dispatcher() as any;
     const route = makeRoute([{ type: 'responses', subtype: 'lite' }]);
     const originalBody = {
@@ -244,9 +254,8 @@ describe('Dispatcher API subtypes', () => {
       'responses:lite'
     );
 
-    expect(result.bypassTransformation).toBe(false);
-    expect(result.payload.tools).toEqual(
-      expect.arrayContaining([expect.objectContaining({ type: 'function', name: 'exec' })])
-    );
+    expect(result.bypassTransformation).toBe(true);
+    expect(result.payload.input).toEqual(originalBody.input);
+    expect(result.payload.tools).toBeUndefined();
   });
 });

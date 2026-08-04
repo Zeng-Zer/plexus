@@ -7,13 +7,17 @@ import type { StallConfig } from '../inspectors/stall-inspector';
 import { CooldownManager } from '../runtime/cooldown-manager';
 import type { RequestManagerHost } from './request-manager';
 import {
+  createLiteToolStripState,
   createThinkingSignatureStripState,
   createUnsupportedParamStripState,
   deleteDottedPath,
+  planLiteToolStrip,
   planThinkingSignatureStrip,
   planUnsupportedParamStrip,
   refundThinkingSignatureStrip,
+  stripLiteUnsupportedTools,
   stripThinkingSignatureBlocks,
+  MAX_LITE_TOOL_STRIP_RETRIES,
   MAX_THINKING_SIGNATURE_STRIP_RETRIES,
   MAX_UNSUPPORTED_PARAM_STRIP_RETRIES,
 } from './dispatcher-auto-compat';
@@ -121,14 +125,16 @@ export async function executeStandardAttempt(
 
   // Reactive auto-compat: bounded per-target state so a strip-and-retry
   // cycle (see the 400 handling below) can't loop forever (see
-  // dispatcher-auto-compat.ts for the matching/bound logic). Two independent
-  // mechanisms, two independent budgets — neither resets the other's
+  // dispatcher-auto-compat.ts for the matching/bound logic). Three
+  // independent mechanisms, three independent budgets — none resets another's
   // counter, so the combined worst case for this target is bounded at
   // exactly 1 (initial attempt) + MAX_THINKING_SIGNATURE_STRIP_RETRIES +
-  // MAX_UNSUPPORTED_PARAM_STRIP_RETRIES fetches, however the two mechanisms
-  // interleave — they can't ping-pong into an unbounded loop.
+  // MAX_UNSUPPORTED_PARAM_STRIP_RETRIES + MAX_LITE_TOOL_STRIP_RETRIES fetches,
+  // however the mechanisms interleave — they can't ping-pong into an
+  // unbounded loop.
   const paramStripState = createUnsupportedParamStripState();
   const thinkingStripState = createThinkingSignatureStripState();
+  const liteToolStripState = createLiteToolStripState();
 
   // Looped so a strip-and-retry can redo the fetch against the SAME target
   // without returning to the caller's failover loop — failing over would
@@ -252,7 +258,7 @@ export async function executeStandardAttempt(
 
       // Reactive auto-compat: a 400 can name a problem that failing over
       // won't fix — every remaining target would reject the same request
-      // the same way — so both mechanisms below strip the offending content
+      // the same way — so the mechanisms below strip the offending content
       // and retry the SAME target instead. Checked in order:
       //
       //   1. Stale thinking-block signatures: alias-level failover can
@@ -263,6 +269,12 @@ export async function executeStandardAttempt(
       //   2. Unsupported/unknown parameters: some upstreams 400 naming one specific
       //      client-sent field (e.g. LobeHub's gpt-5.5 traffic sending
       //      safety_identifier / prompt_cache_key that a provider rejects).
+      //   3. Unsupported responses:lite tools: real Codex CLI traffic
+      //      declares a `web_search` tool by default, but the
+      //      responses:lite wire contract only allows function/custom/
+      //      tool_search tools — the 400 names the restriction generically,
+      //      not the specific tool(s), so every disallowed tool is stripped
+      //      at once.
       if (response.status === 400) {
         if (planThinkingSignatureStrip(errorText, providerPayload, thinkingStripState)) {
           const stripResult = stripThinkingSignatureBlocks(providerPayload);
@@ -308,6 +320,23 @@ export async function executeStandardAttempt(
           // resending the SAME payload would just repeat the identical
           // upstream rejection, so fall through to normal failover/error
           // handling below instead of retrying this target again.
+        }
+
+        if (planLiteToolStrip(errorText, liteToolStripState)) {
+          const stripResult = stripLiteUnsupportedTools(providerPayload);
+          if (stripResult.strippedCount > 0) {
+            providerPayload = stripResult.payload;
+            logger.warn(
+              `Auto-compat: ${route.provider}/${route.model} rejected tool(s) unsupported by ` +
+                `responses:lite — stripped ${stripResult.strippedCount} tool(s) and retrying the ` +
+                `same target (attempt ${liteToolStripState.attempts}/${MAX_LITE_TOOL_STRIP_RETRIES})`
+            );
+            continue;
+          }
+          // Nothing was actually removed (no `tools` array, or every
+          // declared tool was already an allowed type) — resending the SAME
+          // payload would just repeat the identical upstream rejection, so
+          // fall through to normal failover/error handling below.
         }
       }
 
