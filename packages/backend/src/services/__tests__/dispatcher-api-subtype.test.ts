@@ -258,4 +258,80 @@ describe('Dispatcher API subtypes', () => {
     expect(result.payload.input).toEqual(originalBody.input);
     expect(result.payload.tools).toBeUndefined();
   });
+
+  test('normalizes the responses:lite wire contract: strips disallowed tools, defaults reasoning.context, forces parallel_tool_calls false', async () => {
+    // Real Codex CLI traffic declares `web_search` by default and doesn't
+    // reliably send `reasoning.context`/`parallel_tool_calls: false` — the
+    // wire contract both providers configured for the subtype enforce (see
+    // dispatcher-auto-compat.ts's LITE_ALLOWED_TOOL_TYPES). Proactive
+    // normalization avoids paying a strip-and-retry round trip on every such
+    // request.
+    const dispatcher = new Dispatcher() as any;
+    const route = makeRoute([{ type: 'responses', subtype: 'lite' }]);
+    const originalBody = {
+      model: 'gpt-5.6-luna',
+      reasoning: { effort: 'high', summary: 'auto' },
+      parallel_tool_calls: true,
+      tools: [
+        { type: 'function', name: 'exec_command' },
+        { type: 'custom', name: 'apply_patch' },
+        { type: 'tool_search' },
+        { type: 'web_search' },
+      ],
+      input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
+    };
+
+    const result = await dispatcher.transformRequestPayload(
+      {
+        model: 'alias',
+        messages: [],
+        incomingApiType: 'responses:lite',
+        originalBody,
+      },
+      route,
+      TransformerFactory.getTransformer('responses:lite'),
+      'responses:lite'
+    );
+
+    expect(result.bypassTransformation).toBe(true);
+    expect(result.payload.reasoning).toEqual({
+      effort: 'high',
+      summary: 'auto',
+      context: 'all_turns',
+    });
+    expect(result.payload.parallel_tool_calls).toBe(false);
+    expect(result.payload.tools).toEqual([
+      { type: 'function', name: 'exec_command' },
+      { type: 'custom', name: 'apply_patch' },
+      { type: 'tool_search' },
+    ]);
+  });
+
+  test('does not normalize the lite wire contract for a base (non-lite) responses target', async () => {
+    const dispatcher = new Dispatcher() as any;
+    const route = makeRoute(['responses']);
+    const originalBody = {
+      model: 'gpt-5.6-luna',
+      parallel_tool_calls: true,
+      tools: [{ type: 'web_search' }],
+      input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
+    };
+
+    const clientTransformer = new ResponsesTransformer();
+    const unifiedRequest = await clientTransformer.parseRequest(originalBody);
+    unifiedRequest.incomingApiType = 'responses';
+    unifiedRequest.originalBody = originalBody;
+
+    const result = await dispatcher.transformRequestPayload(
+      unifiedRequest,
+      route,
+      TransformerFactory.getTransformer('responses'),
+      'responses'
+    );
+
+    expect(result.payload.parallel_tool_calls).toBe(true);
+    expect(result.payload.tools).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'web_search' })])
+    );
+  });
 });

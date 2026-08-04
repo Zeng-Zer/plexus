@@ -934,7 +934,7 @@ export function refundThinkingSignatureStrip(state: ThinkingSignatureStripState)
 }
 
 // ---------------------------------------------------------------------------
-// Reactive auto-compat: strip-and-retry on unsupported responses:lite tools
+// Unsupported responses:lite tools: proactive strip + reactive strip-and-retry
 // ---------------------------------------------------------------------------
 //
 // Real Codex CLI traffic declares a `web_search` tool by default (see staging
@@ -944,9 +944,16 @@ export function refundThinkingSignatureStrip(state: ThinkingSignatureStripState)
 // `custom`, and client-executed `tool_search` only. Both providers currently
 // configured for the subtype (openlimits, openai-s) reject anything else with
 // a 400 naming the restriction generically, not the specific offending
-// tool(s). Failing over doesn't help — every lite-configured target enforces
-// the same restriction — so strip any disallowed tool and retry the SAME
-// target once.
+// tool(s).
+//
+// `stripLiteUnsupportedTools` is used two ways:
+//   - PROACTIVELY, in request-payload-builder.ts, applied unconditionally
+//     whenever dispatching with the lite header so the common case (Codex's
+//     default `web_search` declaration) never pays a failed round trip.
+//   - REACTIVELY here, as a fallback for anything the proactive pass didn't
+//     anticipate (e.g. a disallowed tool type not yet known about) — failing
+//     over doesn't help, since every lite-configured target enforces the
+//     same restriction, so strip and retry the SAME target once instead.
 
 /**
  * Matches the responses:lite tool-type-restriction 400, e.g.

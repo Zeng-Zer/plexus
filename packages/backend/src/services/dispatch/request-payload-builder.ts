@@ -13,7 +13,11 @@ import {
   prepareNativeOAuthDispatch,
   type PreparedOAuthRequest,
 } from '../oauth/oauth-native-request';
-import { applyRegistryAutoCompat, hasCodexResponsesExtensions } from './dispatcher-auto-compat';
+import {
+  applyRegistryAutoCompat,
+  hasCodexResponsesExtensions,
+  stripLiteUnsupportedTools,
+} from './dispatcher-auto-compat';
 
 /** Symbol stash for the native OAuth prep, read by the standard dispatch seams. */
 export const NATIVE_OAUTH_STASH = Symbol('nativeOAuthPrep');
@@ -184,12 +188,20 @@ export async function buildRequestPayload(
   // setupHeaders/setupProviderHeaders whenever targetApiType is exactly
   // `responses:lite`) comes with a wire contract both providers currently
   // configured for the subtype (openlimits, openai-s) enforce with a 400:
-  // `reasoning.context` must be `all_turns`, and `parallel_tool_calls` must
-  // be `false`. Real Codex CLI requests don't reliably satisfy either (see
-  // staging trace b672ebbd — no `reasoning.context` at all, and
-  // `parallel_tool_calls: true`), so normalize both here rather than
-  // trusting the client. Native OAuth routes build their own headers (see
-  // setupHeaders) and never send this header, so they're excluded.
+  // `reasoning.context` must be `all_turns`, `parallel_tool_calls` must be
+  // `false`, and declared tools are restricted to function/custom/tool_search
+  // (see LITE_ALLOWED_TOOL_TYPES) — real Codex CLI traffic declares
+  // `web_search` by default. Real Codex CLI requests don't reliably satisfy
+  // any of these (see staging trace b672ebbd), so normalize proactively here
+  // rather than paying a strip-and-retry round trip on every such request —
+  // dispatcher-auto-compat.ts's reactive strip-and-retry stays in place as a
+  // fallback for anything this proactive pass doesn't anticipate. This is
+  // NOT a property of `responses:lite` in general: it's specific to this
+  // generic `/v1/responses` + header contract used by non-native providers.
+  // The native Codex/ChatGPT backend (see oauth-native-request.ts's
+  // `prepareCodexOAuthRequest`) hits its own dedicated `/codex/responses`
+  // endpoint, never sends this header, and accepts the client's tools
+  // (including web_search) verbatim — so native OAuth routes are excluded.
   if (!nativeOAuth && targetApiType.toLowerCase() === 'responses:lite') {
     payload = {
       ...payload,
@@ -199,6 +211,7 @@ export async function buildRequestPayload(
       },
       parallel_tool_calls: false,
     };
+    payload = stripLiteUnsupportedTools(payload).payload;
   }
 
   // Native OAuth (currently Anthropic): the payload above is already the correct
