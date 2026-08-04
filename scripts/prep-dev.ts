@@ -22,7 +22,7 @@
  *   PLEXUS_DEV_DATA_PATH        Path for saved data (default: .dev-data/)
  *   PLEXUS_URL                  Base URL for local instance (default: http://localhost)
  *   PLEXUS_PORT                 Port for local instance (auto-derived from cwd)
- *   PLEXUS_ADMIN_KEY            Admin key for local instance (default: password)
+ *   PLEXUS_ADMIN_KEY            Admin key for local instance (default: $ADMIN_KEY, else password)
  *   PLEXUS_EXCLUDE_OAUTH        Exclude OAuth providers (default: true)
  */
 
@@ -69,7 +69,7 @@ Environment variables:
   PLEXUS_DEV_DATA_PATH        Path for saved data (default: .dev-data/)
   PLEXUS_URL                  Base URL for local instance
   PLEXUS_PORT                 Port for local instance (auto-derived from cwd)
-  PLEXUS_ADMIN_KEY            Admin key for local (default: password)
+  PLEXUS_ADMIN_KEY            Admin key for local (default: $ADMIN_KEY, else password)
   PLEXUS_EXCLUDE_OAUTH        Exclude OAuth providers (default: true)
 `);
   process.exit(0);
@@ -94,9 +94,17 @@ const LOCAL_PORT =
   process.env.PLEXUS_PORT ??
   process.env.PASEO_SERVICE_DEV_PORT ??
   process.env.PASEO_PORT ??
-  deriveDevPort();
+  deriveDevPort(process.cwd(), 'dev');
 const LOCAL_URL = `${LOCAL_BASE_URL}:${LOCAL_PORT}`;
-const LOCAL_KEY = process.env.PLEXUS_ADMIN_KEY ?? 'password';
+// PLEXUS_ADMIN_KEY is the explicit override; ADMIN_KEY is what dev.ts/dev-agent.ts
+// actually set (and pass through) for the running local instance, so honor it
+// before falling back to the shared 'password' default.
+const LOCAL_KEY = process.env.PLEXUS_ADMIN_KEY ?? process.env.ADMIN_KEY ?? 'password';
+const LOCAL_KEY_SOURCE = process.env.PLEXUS_ADMIN_KEY
+  ? 'PLEXUS_ADMIN_KEY'
+  : process.env.ADMIN_KEY
+    ? 'ADMIN_KEY'
+    : 'default (password)';
 const EXCLUDE_OAUTH = (process.env.PLEXUS_EXCLUDE_OAUTH ?? 'true').toLowerCase() !== 'false';
 
 // ---------------------------------------------------------------------------
@@ -451,7 +459,8 @@ async function main() {
   console.log(`  Target local:  ${LOCAL_URL}`);
   console.log(`  Data path:     ${DEV_DATA_PATH}`);
   console.log(`  Live mode:     ${shouldUseLive ? 'yes' : 'no'}`);
-  console.log(`  Save mode:     ${shouldSave ? 'yes' : 'no'}\n`);
+  console.log(`  Save mode:     ${shouldSave ? 'yes' : 'no'}`);
+  console.log(`  Admin key from: ${LOCAL_KEY_SOURCE}\n`);
 
   let backupData: Buffer | null = null;
 

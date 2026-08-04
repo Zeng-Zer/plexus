@@ -354,7 +354,11 @@ export interface ResponsesBuiltInToolCallItem {
     | 'code_interpreter_call'
     | 'computer_call'
     | 'image_generation_call'
-    | 'mcp_call';
+    | 'mcp_call'
+    // Deferred tool-discovery call: execution is delegated to the CLIENT
+    // (`execution: "client"`), so unlike the other built-ins above it must be
+    // forwarded to the caller to act on rather than resolved by the provider.
+    | 'tool_search_call';
   id: string;
   status: 'in_progress' | 'completed' | 'failed';
   [key: string]: any; // Tool-specific fields

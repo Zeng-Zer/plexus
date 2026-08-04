@@ -11,7 +11,7 @@
  * Environment variables (all optional — defaults match `bun run dev` defaults):
  *   PLEXUS_URL       Complete Plexus origin, or a hostname to combine with PLEXUS_PORT
  *   PLEXUS_PORT      Port (default: worktree-derived when PLEXUS_URL is unset)
- *   PLEXUS_ADMIN_KEY Admin key                        (default: password)
+ *   PLEXUS_ADMIN_KEY Admin key                        (default: $ADMIN_KEY, else password)
  *
  * Data sources (applied in order — later entries win on name collision):
  *   scripts/default-populate.json   — committed default fixtures (no secrets)
@@ -28,7 +28,10 @@ export { deriveDevPort };
 // Config from environment
 // ---------------------------------------------------------------------------
 
-const ADMIN_KEY = process.env.PLEXUS_ADMIN_KEY ?? 'password';
+// PLEXUS_ADMIN_KEY is the explicit override; ADMIN_KEY is what dev.ts/dev-agent.ts
+// actually set (and pass through) for the running local instance, so honor it
+// before falling back to the shared 'password' default.
+const ADMIN_KEY = process.env.PLEXUS_ADMIN_KEY ?? process.env.ADMIN_KEY ?? 'password';
 
 export function resolveApiRoot(
   env: Pick<NodeJS.ProcessEnv, 'PLEXUS_URL' | 'PLEXUS_PORT'> = process.env,
@@ -37,7 +40,7 @@ export function resolveApiRoot(
   const configuredUrl = env.PLEXUS_URL ?? 'http://localhost';
   const url = new URL(configuredUrl.includes('://') ? configuredUrl : `http://${configuredUrl}`);
   if (!url.port) {
-    const port = env.PLEXUS_PORT ?? (env.PLEXUS_URL ? undefined : deriveDevPort(cwd));
+    const port = env.PLEXUS_PORT ?? (env.PLEXUS_URL ? undefined : deriveDevPort(cwd, 'dev'));
     if (port) url.port = port;
   }
   return url.origin;

@@ -47,12 +47,16 @@ function sanitizeTarget(name?: string): string {
 
 const targetName = isStop ? sanitizeTarget(rawArgs[1]) : sanitizeTarget(rawArgs[0]);
 
-function derivePort(target: string): string {
+// One dev server per worktree: derive the same port regardless of which
+// target (dev / dev:full / dev:pglite) is used to start it, matching
+// dev.ts and dev-config.ts. Paseo-managed runs still get their own port via
+// $PASEO_PORT (see paseo.json), which takes precedence through process.env.PORT.
+function derivePort(): string {
   if (process.env.PORT) return process.env.PORT;
-  return deriveDevPort(process.cwd(), target);
+  return deriveDevPort(process.cwd(), 'dev');
 }
 
-const PORT = derivePort(targetName);
+const PORT = derivePort();
 const ADMIN_KEY = process.env.ADMIN_KEY ?? 'password';
 const CONSECUTIVE_OK = 3;
 const READY_TIMEOUT_MS = 180_000;

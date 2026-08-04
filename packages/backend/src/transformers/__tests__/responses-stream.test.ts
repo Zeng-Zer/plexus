@@ -1785,3 +1785,234 @@ describe('ResponsesTransformer transformStream -> OpenAITransformer formatStream
     expect(finishChunk.usage.total_tokens).toBe(10);
   });
 });
+
+// Typed client_tool_calls carry (see UnifiedClientToolCall in
+// types/unified.ts) — a built-in Responses tool-call item whose execution is
+// delegated to the CLIENT (`execution: "client"`, e.g. tool_search_call).
+// Regression coverage for the bug this PR fixes: these items were previously
+// silently dropped (unrecognized item type), leaving the client with no
+// signal that a tool call was pending — the turn looked finished when it
+// wasn't. Also locks in the fix for a follow-up bug found in review: unlike
+// function_call, a client_tool_calls-only stream must NOT set finish_reason
+// to 'tool_calls' — chat/messages-format clients have no way to represent
+// this item (no delta.tool_calls gets populated for it), so upgrading
+// finish_reason for them would send a 'tool_calls' finish with an empty
+// tool_calls array, which SDKs commonly loop or throw on.
+describe('ResponsesTransformer typed client_tool_calls carry (tool_search_call)', () => {
+  const toolSearchItem = (overrides: Partial<Record<string, unknown>> = {}) => ({
+    id: 'tsc_1',
+    type: 'tool_search_call',
+    call_id: 'call_1',
+    execution: 'client',
+    status: 'completed',
+    arguments: { query: 'exec_command' },
+    ...overrides,
+  });
+
+  function unifiedStreamFromChunks(chunks: any[]): ReadableStream {
+    return new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+  }
+
+  async function collectFormatStreamEvents(chunks: any[], transformer: any): Promise<any[]> {
+    const reader = transformer.formatStream(unifiedStreamFromChunks(chunks)).getReader();
+    const decoder = new TextDecoder();
+    let output = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      output += decoder.decode(value);
+    }
+    return output
+      .split('\n\n')
+      .filter((block: string) => block.trim().length > 0)
+      .map((block: string) => {
+        const dataLine = block.split('\n').find((line) => line.startsWith('data: '));
+        const data = (dataLine as string).replace(/^data:\s*/, '');
+        return data === '[DONE]' ? '[DONE]' : JSON.parse(data);
+      });
+  }
+
+  describe('transformStream (inbound: Responses SSE -> unified chunks)', () => {
+    test('a streamed tool_search_call item carries as a chunk-level client_tool_calls entry', async () => {
+      const chunks = await transformEvents([
+        {
+          type: 'response.created',
+          response: { id: 'resp_tsc_1', model: 'gpt-5.6-luna', created_at: 1234567890 },
+        },
+        { type: 'response.output_item.done', output_index: 0, item: toolSearchItem() },
+        { type: 'response.completed', response: {} },
+      ]);
+
+      const toolChunks = chunks.filter((chunk) => chunk.client_tool_calls);
+      expect(toolChunks).toHaveLength(1);
+      expect(toolChunks[0].client_tool_calls).toEqual([toolSearchItem()]);
+      // Chunk-level, not inside delta — same reason as image_generation_calls.
+      expect(toolChunks[0].delta.client_tool_calls).toBeUndefined();
+    });
+
+    test('the completed-fallback also carries the item, without double-carrying deduped items', async () => {
+      const item = toolSearchItem();
+      const chunks = await transformEvents([
+        {
+          type: 'response.created',
+          response: { id: 'resp_tsc_2', model: 'gpt-5.6-luna', created_at: 1234567890 },
+        },
+        { type: 'response.output_item.done', output_index: 0, item },
+        { type: 'response.completed', response: { id: 'resp_tsc_2', output: [item] } },
+      ]);
+
+      expect(chunks.filter((chunk) => chunk.client_tool_calls)).toHaveLength(1);
+    });
+
+    test('a completed-only item (never streamed via output_item.done) still gets carried', async () => {
+      const chunks = await transformEvents([
+        {
+          type: 'response.created',
+          response: { id: 'resp_tsc_3', model: 'gpt-5.6-luna', created_at: 1234567890 },
+        },
+        {
+          type: 'response.completed',
+          response: {
+            id: 'resp_tsc_3',
+            status: 'completed',
+            output: [toolSearchItem({ id: 'tsc_9' })],
+          },
+        },
+      ]);
+
+      const toolChunks = chunks.filter((chunk) => chunk.client_tool_calls);
+      expect(toolChunks).toHaveLength(1);
+      expect(toolChunks[0].client_tool_calls[0].id).toBe('tsc_9');
+    });
+
+    test('finishes with "stop", NOT "tool_calls", when the only output is a client_tool_calls item', async () => {
+      const chunks = await transformEvents([
+        {
+          type: 'response.created',
+          response: { id: 'resp_tsc_4', model: 'gpt-5.6-luna', created_at: 1234567890 },
+        },
+        { type: 'response.output_item.done', output_index: 0, item: toolSearchItem() },
+        { type: 'response.completed', response: {} },
+      ]);
+
+      expect(chunks.findLast((chunk) => chunk.finish_reason)?.finish_reason).toBe('stop');
+    });
+
+    test('finishes with "stop" when a client_tool_calls item appears only in the completed response', async () => {
+      const chunks = await transformEvents([
+        {
+          type: 'response.created',
+          response: { id: 'resp_tsc_5', model: 'gpt-5.6-luna', created_at: 1234567890 },
+        },
+        {
+          type: 'response.completed',
+          response: { output: [toolSearchItem()] },
+        },
+      ]);
+
+      expect(chunks.findLast((chunk) => chunk.finish_reason)?.finish_reason).toBe('stop');
+    });
+
+    test('a real function_call alongside a client_tool_calls item still finishes with "tool_calls"', async () => {
+      const chunks = await transformEvents([
+        {
+          type: 'response.created',
+          response: { id: 'resp_tsc_6', model: 'gpt-5.6-luna', created_at: 1234567890 },
+        },
+        {
+          type: 'response.output_item.added',
+          output_index: 0,
+          item: { type: 'function_call', call_id: 'call_fn', name: 'get_date', arguments: '' },
+        },
+        { type: 'response.output_item.done', output_index: 1, item: toolSearchItem() },
+        { type: 'response.completed', response: {} },
+      ]);
+
+      expect(chunks.findLast((chunk) => chunk.finish_reason)?.finish_reason).toBe('tool_calls');
+    });
+  });
+
+  describe('formatStream (outbound: unified chunks -> native Responses output)', () => {
+    test('re-emits the typed item as a native tool_search_call output item', async () => {
+      const item = toolSearchItem();
+      const chunk = {
+        id: 'resp_native_tsc',
+        model: 'gpt-5.6-luna',
+        created: 1234567890,
+        delta: {},
+        client_tool_calls: [item],
+        finish_reason: null,
+      };
+      const finishChunk = {
+        id: 'resp_native_tsc',
+        model: 'gpt-5.6-luna',
+        created: 1234567890,
+        delta: {},
+        finish_reason: 'stop',
+      };
+
+      const events = await collectFormatStreamEvents(
+        [chunk, finishChunk],
+        new ResponsesTransformer()
+      );
+      const completed = events.find((e) => e.type === 'response.completed');
+      expect(completed).toBeDefined();
+      const outputTypes = completed.response.output.map((o: any) => o.type);
+      expect(outputTypes).toContain('tool_search_call');
+      const native = completed.response.output.find((o: any) => o.type === 'tool_search_call');
+      expect(native).toMatchObject({
+        call_id: 'call_1',
+        execution: 'client',
+        arguments: { query: 'exec_command' },
+      });
+    });
+  });
+
+  describe('non-streaming round trip (transformResponse -> formatResponse)', () => {
+    test('transformResponse extracts client_tool_calls and formatResponse re-emits it natively', async () => {
+      const transformer = new ResponsesTransformer();
+      const unified = await transformer.transformResponse({
+        id: 'resp_tsc_ns',
+        object: 'response',
+        created_at: 1234567890,
+        status: 'completed',
+        model: 'gpt-5.6-luna',
+        output: [toolSearchItem()],
+      });
+
+      expect(unified.client_tool_calls).toEqual([toolSearchItem()]);
+
+      const formatted = await transformer.formatResponse(unified);
+      const native = formatted.output.find((o: any) => o.type === 'tool_search_call');
+      expect(native).toMatchObject({ call_id: 'call_1', execution: 'client' });
+    });
+  });
+
+  describe('cross-format (Responses -> Chat Completions): no false "tool_calls" finish', () => {
+    test('a chat-format client never receives finish_reason "tool_calls" for a client_tool_calls-only turn', async () => {
+      const chunks = await transformEvents([
+        {
+          type: 'response.created',
+          response: { id: 'resp_tsc_chat', model: 'gpt-5.6-luna', created_at: 1234567890 },
+        },
+        { type: 'response.output_item.done', output_index: 0, item: toolSearchItem() },
+        { type: 'response.completed', response: {} },
+      ]);
+
+      const chatEvents = await collectFormatStreamEvents(chunks, new OpenAITransformer());
+      const finishEvent = chatEvents.find((e) => e !== '[DONE]' && e.choices?.[0]?.finish_reason);
+      expect(finishEvent).toBeDefined();
+      expect(finishEvent.choices[0].finish_reason).toBe('stop');
+      // No tool_calls array should ever appear on any chunk for this client —
+      // the chat formatter has no representation for client_tool_calls.
+      expect(chatEvents.some((e) => e !== '[DONE]' && e.choices?.[0]?.delta?.tool_calls)).toBe(
+        false
+      );
+    });
+  });
+});

@@ -1,6 +1,6 @@
 import type { UnifiedChatRequest } from '../../types/unified';
 import { getConfig } from '../../config';
-import { getApiBaseType } from '../../utils/api-format';
+import { getApiBaseType, getApiSubtype } from '../../utils/api-format';
 import { logger } from '../../utils/logger';
 import { applyModelBehaviors } from '../models/model-behaviors';
 import type { RouteResult } from '../routing/router';
@@ -13,7 +13,11 @@ import {
   prepareNativeOAuthDispatch,
   type PreparedOAuthRequest,
 } from '../oauth/oauth-native-request';
-import { applyRegistryAutoCompat, hasCodexResponsesExtensions } from './dispatcher-auto-compat';
+import {
+  applyRegistryAutoCompat,
+  hasCodexResponsesExtensions,
+  stripLiteUnsupportedTools,
+} from './dispatcher-auto-compat';
 
 /** Symbol stash for the native OAuth prep, read by the standard dispatch seams. */
 export const NATIVE_OAUTH_STASH = Symbol('nativeOAuthPrep');
@@ -61,8 +65,24 @@ function shouldUsePassThrough(
     return false;
   }
 
+  // Only force the transform pipeline when the target fell back to the bare
+  // `responses` type (no explicit Lite support advertised) — NOT any
+  // `responses:<subtype>` match. A target that matches the `responses:lite`
+  // subtype EXACTLY has been deliberately configured as Codex-native —
+  // verified live against both providers currently marked `responses:lite`
+  // (see dispatcher-api-subtype.test.ts): both correctly parse raw
+  // `additional_tools`/`custom`/`namespace` wire extensions and invoke tools
+  // without flattening. That's the whole point of the subtype: avoid the
+  // transform pipeline where the target has opted in. Providers that only
+  // match on the base type haven't made that claim, so they still get the
+  // defensive flatten. Checked via getApiBaseType/getApiSubtype (not a naive
+  // `=== 'responses'` string compare) so this expresses the actual intent —
+  // "base type only, no subtype" — rather than "not literally 'responses'",
+  // which would silently stop flattening for any FUTURE `responses:<other>`
+  // subtype too, not just `lite`.
   if (
     getApiBaseType(targetApiType) === 'responses' &&
+    getApiSubtype(targetApiType) !== 'lite' &&
     hasCodexResponsesExtensions(request.originalBody)
   ) {
     return false;
@@ -168,6 +188,49 @@ export async function buildRequestPayload(
       `Adapters applied (preDispatch): [${adapters.map((entry) => entry.adapter.name).join(', ')}] ` +
         `for ${route.provider}/${route.model}`
     );
+  }
+
+  // The provider-side `X-OpenAI-Internal-Codex-Responses-Lite` header (set in
+  // setupHeaders/setupProviderHeaders whenever targetApiType is exactly
+  // `responses:lite`) comes with a wire contract both providers currently
+  // configured for the subtype (openlimits, openai-s) enforce with a 400:
+  // `reasoning.context` must be `all_turns`, `parallel_tool_calls` must be
+  // `false`, and declared tools are restricted to function/custom/tool_search
+  // (see LITE_ALLOWED_TOOL_TYPES) — real Codex CLI traffic declares
+  // `web_search` by default. Real Codex CLI requests don't reliably satisfy
+  // any of these (see staging trace b672ebbd), so normalize proactively here
+  // rather than paying a strip-and-retry round trip on every such request —
+  // dispatcher-auto-compat.ts's reactive strip-and-retry stays in place as a
+  // fallback for anything this proactive pass doesn't anticipate. This is
+  // NOT a property of `responses:lite` in general: it's specific to this
+  // generic `/v1/responses` + header contract used by non-native providers.
+  // The native Codex/ChatGPT backend (see oauth-native-request.ts's
+  // `prepareCodexOAuthRequest`) hits its own dedicated `/codex/responses`
+  // endpoint, never sends this header, and accepts the client's tools
+  // (including web_search) verbatim — so native OAuth routes are excluded.
+  if (!nativeOAuth && targetApiType.toLowerCase() === 'responses:lite') {
+    payload = {
+      ...payload,
+      // Only default `context` when the payload already has a `reasoning`
+      // object — injecting one from nothing would send `reasoning` to a
+      // non-reasoning model routed through a lite target, and /v1/responses
+      // rejects that as an unsupported parameter. A genuinely reasoning
+      // model (the only kind Codex CLI's lite mode targets in practice)
+      // always sends `reasoning` itself, so this never needed to default
+      // the object's presence, only the missing `context` field within it.
+      ...(payload.reasoning
+        ? { reasoning: { ...payload.reasoning, context: payload.reasoning.context ?? 'all_turns' } }
+        : {}),
+      parallel_tool_calls: false,
+    };
+    const toolStripResult = stripLiteUnsupportedTools(payload);
+    if (toolStripResult.strippedCount > 0) {
+      logger.debug(
+        `Auto-compat: proactively stripped ${toolStripResult.strippedCount} tool(s) unsupported ` +
+          `by responses:lite for ${route.provider}/${route.model}`
+      );
+    }
+    payload = toolStripResult.payload;
   }
 
   // Native OAuth (currently Anthropic): the payload above is already the correct

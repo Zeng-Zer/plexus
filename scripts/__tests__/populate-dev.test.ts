@@ -5,7 +5,7 @@ describe('resolveApiRoot', () => {
   it('uses the worktree-derived port by default', () => {
     const cwd = '/workspace/plexus-review';
 
-    expect(resolveApiRoot({}, cwd)).toBe(`http://localhost:${deriveDevPort(cwd)}`);
+    expect(resolveApiRoot({}, cwd)).toBe(`http://localhost:${deriveDevPort(cwd, 'dev')}`);
   });
 
   it.each([

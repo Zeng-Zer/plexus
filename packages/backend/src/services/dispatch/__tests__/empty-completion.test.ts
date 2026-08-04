@@ -403,6 +403,71 @@ describe('getResponseVisibilitySignals / isEmptyUnifiedResponse — typed image_
   });
 });
 
+describe('getResponseVisibilitySignals / isEmptyUnifiedResponse — typed client_tool_calls signal (responses:lite)', () => {
+  // A lite-mode turn whose ONLY output is a pending tool_search_call has no
+  // text, no reasoning, no tool_calls, no annotations, no images — the typed
+  // `client_tool_calls` carry is its only visibility signal. Without it,
+  // this is misclassified as empty and failed over: the exact bug class
+  // this PR fixes, one layer down (see transformers/responses.ts's
+  // isClientExecutedToolItem).
+  it('a client_tool_calls entry counts as visible output (no failover)', () => {
+    const response = {
+      ...emptyResponse(),
+      client_tool_calls: [
+        { id: 'tsc_1', type: 'tool_search_call', call_id: 'call_1', execution: 'client' },
+      ],
+    } as UnifiedChatResponse;
+
+    expect(getResponseVisibilitySignals(response).clientToolCallCount).toBe(1);
+    expect(isEmptyUnifiedResponse(response)).toBe(false);
+  });
+
+  it('multiple entries are all counted', () => {
+    const response = {
+      ...emptyResponse(),
+      client_tool_calls: [
+        { id: 'tsc_1', type: 'tool_search_call', call_id: 'call_1', execution: 'client' },
+        { id: 'tsc_2', type: 'tool_search_call', call_id: 'call_2', execution: 'client' },
+      ],
+    } as UnifiedChatResponse;
+
+    expect(getResponseVisibilitySignals(response).clientToolCallCount).toBe(2);
+  });
+
+  it('an absent client_tool_calls field contributes zero', () => {
+    expect(getResponseVisibilitySignals(emptyResponse()).clientToolCallCount).toBe(0);
+  });
+
+  // End-to-end: a REAL ResponsesTransformer transform of a
+  // tool_search_call-only completion (bypass-transformation path — the
+  // transformer still runs to derive usage stats, per
+  // dispatcher.ts's handleNonStreamingResponse) must read as non-empty
+  // purely via the typed carry.
+  it('a real transformed tool_search_call-only Responses completion is NOT empty', async () => {
+    const unified = await new ResponsesTransformer().transformResponse({
+      id: 'resp_tool_search',
+      object: 'response',
+      created_at: 1,
+      status: 'completed',
+      model: 'lite-model',
+      output: [
+        {
+          type: 'tool_search_call',
+          id: 'tsc_1',
+          call_id: 'call_1',
+          execution: 'client',
+          status: 'completed',
+          arguments: { query: 'exec' },
+        },
+      ],
+    });
+
+    expect(unified.content).toBeNull();
+    expect(getResponseVisibilitySignals(unified).clientToolCallCount).toBe(1);
+    expect(isEmptyUnifiedResponse(unified)).toBe(false);
+  });
+});
+
 describe('createStreamVisibilityTracker / observeStreamChunk / isStreamEmpty (streaming adapter)', () => {
   it('starts empty', () => {
     const tracker = createStreamVisibilityTracker();
@@ -516,6 +581,49 @@ describe('observeStreamChunk — chunk-level annotations/images branches (forwar
 
     expect(tracker.annotationCount).toBe(0);
     expect(tracker.imageCount).toBe(0);
+    expect(isStreamEmpty(tracker)).toBe(true);
+  });
+});
+
+describe('observeStreamChunk — chunk-level client_tool_calls (responses:lite streaming)', () => {
+  // The responses transformer emits client_tool_calls on a `delta: {}`
+  // chunk (see transformers/responses.ts's transformStream) — same
+  // chunk-level-field-not-inside-delta shape as image_generation_calls, and
+  // for the same reason: chat-facing formatters forward `delta` BY
+  // REFERENCE into the client SSE chunk, so this can't live inside `delta`.
+  it('a chunk-level client_tool_calls array marks the tracker non-empty', () => {
+    const tracker = createStreamVisibilityTracker();
+    observeStreamChunk(tracker, {
+      delta: {},
+      client_tool_calls: [
+        { id: 'tsc_1', type: 'tool_search_call', call_id: 'call_1', execution: 'client' },
+      ],
+    } as any);
+
+    expect(tracker.clientToolCallCount).toBe(1);
+    expect(isStreamEmpty(tracker)).toBe(false);
+  });
+
+  it('counts accumulate across chunks', () => {
+    const tracker = createStreamVisibilityTracker();
+    observeStreamChunk(tracker, {
+      delta: {},
+      client_tool_calls: [{ id: 'tsc_1', type: 'tool_search_call', call_id: 'call_1' }],
+    } as any);
+    observeStreamChunk(tracker, {
+      delta: {},
+      client_tool_calls: [{ id: 'tsc_2', type: 'tool_search_call', call_id: 'call_2' }],
+    } as any);
+
+    expect(tracker.clientToolCallCount).toBe(2);
+  });
+
+  it('an empty or absent client_tool_calls array leaves the tracker empty', () => {
+    const tracker = createStreamVisibilityTracker();
+    observeStreamChunk(tracker, { delta: {}, client_tool_calls: [] } as any);
+    observeStreamChunk(tracker, { delta: {} });
+
+    expect(tracker.clientToolCallCount).toBe(0);
     expect(isStreamEmpty(tracker)).toBe(true);
   });
 });

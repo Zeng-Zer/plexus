@@ -19,4 +19,25 @@ describe('Responses API subtype detection', () => {
       'responses'
     );
   });
+
+  test('detects Lite from a declared tool_search tool even without additional_tools or the header', () => {
+    // Reproduces staging debug trace b672ebbd: a genuine Codex CLI request
+    // that declares its lazy tool-discovery tool (`tool_search`) up front
+    // instead of sending an `additional_tools` input item, and without the
+    // internal header. Missing this signal caused the request to lose
+    // routing preference for providers explicitly configured to support
+    // `responses:lite`.
+    expect(
+      detectResponsesApiType(
+        {},
+        {
+          input: [{ type: 'message', role: 'user' }],
+          tools: [
+            { type: 'function', name: 'exec_command' },
+            { type: 'tool_search', description: 'Tool discovery' },
+          ],
+        }
+      )
+    ).toBe('responses:lite');
+  });
 });

@@ -932,3 +932,106 @@ export function planThinkingSignatureStrip(
 export function refundThinkingSignatureStrip(state: ThinkingSignatureStripState): void {
   if (state.attempts > 0) state.attempts--;
 }
+
+// ---------------------------------------------------------------------------
+// Unsupported responses:lite tools: proactive strip + reactive strip-and-retry
+// ---------------------------------------------------------------------------
+//
+// Real Codex CLI traffic declares a `web_search` tool by default (see staging
+// trace b672ebbd), but the `X-OpenAI-Internal-Codex-Responses-Lite` wire
+// contract (sent whenever targetApiType is exactly `responses:lite` — see
+// provider-request-headers.ts) restricts declared tools to `function`,
+// `custom`, and client-executed `tool_search` only. Both providers currently
+// configured for the subtype (openlimits, openai-s) reject anything else with
+// a 400 naming the restriction generically, not the specific offending
+// tool(s).
+//
+// `stripLiteUnsupportedTools` is used two ways:
+//   - PROACTIVELY, in request-payload-builder.ts, applied unconditionally
+//     whenever dispatching with the lite header so the common case (Codex's
+//     default `web_search` declaration) never pays a failed round trip.
+//   - REACTIVELY here, as a fallback for anything the proactive pass didn't
+//     anticipate (e.g. a disallowed tool type not yet known about) — failing
+//     over doesn't help, since every lite-configured target enforces the
+//     same restriction, so strip and retry the SAME target once instead.
+
+/**
+ * Matches the responses:lite tool-type-restriction 400, e.g.
+ * "X-OpenAI-Internal-Codex-Responses-Lite only supports function tools,
+ * custom tools, and client-executed tool search."
+ */
+const LITE_UNSUPPORTED_TOOLS_PATTERN =
+  /responses-lite only supports function tools, custom tools, and client-executed tool search/i;
+
+/** Tool `type`s the responses:lite wire contract allows. */
+const LITE_ALLOWED_TOOL_TYPES = new Set(['function', 'custom', 'tool_search']);
+
+/**
+ * True when an upstream error response body names the responses:lite
+ * tool-type restriction.
+ */
+export function matchLiteUnsupportedToolsError(responseBody: string): boolean {
+  if (!responseBody) return false;
+  return LITE_UNSUPPORTED_TOOLS_PATTERN.test(responseBody);
+}
+
+export interface LiteToolStripResult {
+  /**
+   * The payload with every disallowed tool removed. A NEW object
+   * (copy-on-write) with a NEW `tools` array when `strippedCount` > 0 — the
+   * input payload's `tools` array (possibly shared by reference with the
+   * long-lived UnifiedChatRequest) is never mutated. Identical to the input
+   * `payload` reference when `strippedCount` is 0 — nothing to rebuild.
+   */
+  payload: Record<string, any>;
+  /** Number of tools actually removed (0 when there was nothing to strip). */
+  strippedCount: number;
+}
+
+/**
+ * Removes any `payload.tools` entry whose `type` isn't `function`, `custom`,
+ * or `tool_search` (see `LITE_ALLOWED_TOOL_TYPES`) — copy-on-write, like the
+ * strips above.
+ */
+export function stripLiteUnsupportedTools(payload: Record<string, any>): LiteToolStripResult {
+  if (!Array.isArray(payload.tools)) return { payload, strippedCount: 0 };
+
+  const kept = payload.tools.filter(
+    (tool: any) => tool && typeof tool === 'object' && LITE_ALLOWED_TOOL_TYPES.has(tool.type)
+  );
+  const strippedCount = payload.tools.length - kept.length;
+  if (strippedCount === 0) return { payload, strippedCount: 0 };
+
+  return { payload: { ...payload, tools: kept }, strippedCount };
+}
+
+/** Per-target, per-request bound: at most one lite-tool-strip-and-retry cycle. */
+export const MAX_LITE_TOOL_STRIP_RETRIES = 1;
+
+/** Tracks lite-tool-strip-and-retry progress for a single target within one request. */
+export interface LiteToolStripState {
+  attempts: number;
+}
+
+export function createLiteToolStripState(): LiteToolStripState {
+  return { attempts: 0 };
+}
+
+/**
+ * Decides whether an upstream 400 body naming the responses:lite tool-type
+ * restriction should trigger a strip-and-retry cycle against the same
+ * target, recording the attempt in `state` when it does. Returns `false`
+ * when the retry should NOT happen because:
+ *   - the body doesn't name the restriction, OR
+ *   - MAX_LITE_TOOL_STRIP_RETRIES has already been used for this target
+ *     (bounded to exactly one retry — once the disallowed tools are gone, a
+ *     repeat 400 means something else is wrong, so normal failover should
+ *     proceed instead of retrying again).
+ */
+export function planLiteToolStrip(responseBody: string, state: LiteToolStripState): boolean {
+  if (state.attempts >= MAX_LITE_TOOL_STRIP_RETRIES) return false;
+  if (!matchLiteUnsupportedToolsError(responseBody)) return false;
+
+  state.attempts++;
+  return true;
+}

@@ -3,14 +3,19 @@ import { ThinkLevel } from '../types/unified';
 export function projectReasoningForResponses(
   reasoning:
     | {
-        effort?: ThinkLevel;
+        // Accept the legacy 'off' level in addition to the Responses-native
+        // 'none' — clients/model aliases still send 'off' (see
+        // normalizeEffort / splitReasoningSuffix in services/pi-ai/reasoning.ts).
+        effort?: ThinkLevel | 'off';
         enabled?: boolean;
         summary?: string;
       }
     | undefined
 ): { effort?: ThinkLevel; summary?: string } | undefined {
   if (!reasoning) return undefined;
-  if (reasoning.enabled === false || reasoning.effort === 'off') {
+  // 'off' is not a valid Responses effort level — normalize it to 'none'
+  // rather than forwarding an invalid payload.
+  if (reasoning.enabled === false || reasoning.effort === 'off' || reasoning.effort === 'none') {
     return { effort: 'none' };
   }
 
