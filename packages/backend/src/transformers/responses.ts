@@ -51,16 +51,38 @@ function toUnifiedImageGenerationCall(item: any): UnifiedImageGenerationCall {
  * same "keep this and tell the client" treatment as a function_call rather
  * than being silently dropped as an unrecognized item type. Keyed on the
  * `execution` discriminator (not a type allowlist) so future built-in
- * client-executed tool types are handled automatically.
+ * client-executed tool types are handled automatically, plus a `_call`
+ * suffix check so a provider that ever stamps `execution` on some unrelated
+ * item type can't be misread as a tool call. Accepts either `call_id` or
+ * `id` (falling back between them — see `clientToolCallKey` below) rather
+ * than requiring `call_id` specifically: every item observed on the wire so
+ * far has both, but requiring one exclusively risks silently dropping an
+ * item that only has the other, which is exactly the failure mode this
+ * carry exists to prevent.
  */
 function isClientExecutedToolItem(item: any): item is UnifiedClientToolCall {
   return (
     !!item &&
     typeof item === 'object' &&
     item.execution === 'client' &&
-    typeof item.call_id === 'string' &&
-    typeof item.type === 'string'
+    typeof item.type === 'string' &&
+    item.type.endsWith('_call') &&
+    (typeof item.call_id === 'string' || typeof item.id === 'string')
   );
+}
+
+/**
+ * Identifier used to dedupe a client-executed tool-call item between its
+ * streamed `response.output_item.done` event and the `response.completed`
+ * fallback loop — prefers `id` (the item's own identity) and falls back to
+ * `call_id` when `id` is absent, so an item missing either field still gets
+ * a stable dedupe key instead of silently bypassing the dedupe check (which
+ * would emit it twice) or being dropped entirely.
+ */
+function clientToolCallKey(item: any): string | undefined {
+  if (typeof item?.id === 'string') return item.id;
+  if (typeof item?.call_id === 'string') return item.call_id;
+  return undefined;
 }
 
 // Some Responses clients have been observed replaying tool calls with composite
@@ -1233,13 +1255,20 @@ export class ResponsesTransformer implements Transformer {
               ) {
                 // Built-in tool-call item whose execution the model
                 // delegated to the client (e.g. tool_search_call). Carry it
-                // typed (see UnifiedClientToolCall) and flag it the same as
-                // a function call so `finish_reason` comes out 'tool_calls'
-                // instead of 'stop' — otherwise the client has no signal
-                // that it's expected to act and continue the turn.
-                hasFunctionCall = true;
-                if (typeof data.item.id === 'string') {
-                  renderedClientToolCallIds.add(data.item.id);
+                // typed (see UnifiedClientToolCall) so responses-facing
+                // formatStream can re-emit it natively — that native item is
+                // what actually signals a Responses-format client (e.g.
+                // Codex) that a tool call is pending; the Responses wire
+                // format has no `finish_reason` field at all, so this does
+                // NOT set `hasFunctionCall`. Chat/messages-format clients
+                // have no way to represent this item (no delta.tool_calls
+                // gets populated for it), so upgrading `finish_reason` to
+                // 'tool_calls' here would send them a 'tool_calls' finish
+                // with an empty tool_calls array — SDKs commonly loop or
+                // throw on that shape.
+                const clientToolCallKeyForItem = clientToolCallKey(data.item);
+                if (clientToolCallKeyForItem) {
+                  renderedClientToolCallIds.add(clientToolCallKeyForItem);
                 }
                 controller.enqueue({
                   id: responseId,
@@ -1255,8 +1284,13 @@ export class ResponsesTransformer implements Transformer {
                 // Responses-compatible providers omit intermediate function-call events.
                 const usage = data.response?.usage;
                 const normalizedUsage = usage ? normalizeOpenAIResponsesUsage(usage) : undefined;
+                // Client-executed tool-call items are deliberately excluded
+                // here — see the matching comment on the output_item.done
+                // branch above: they carry no chat-format representation, so
+                // upgrading `finish_reason` for them would mislead
+                // chat/messages-format clients rather than help any client.
                 const completedResponseHasFunctionCall = data.response?.output?.some(
-                  (item: any) => item?.type === 'function_call' || isClientExecutedToolItem(item)
+                  (item: any) => item?.type === 'function_call'
                 );
                 // Same fallback as function calls above: render any completed
                 // image_generation_call items that only appear in the final
@@ -1287,7 +1321,8 @@ export class ResponsesTransformer implements Transformer {
                 // events didn't carry it) — skip ones already carried above.
                 for (const item of data.response?.output ?? []) {
                   if (!isClientExecutedToolItem(item)) continue;
-                  if (typeof item.id === 'string' && renderedClientToolCallIds.has(item.id)) {
+                  const key = clientToolCallKey(item);
+                  if (key && renderedClientToolCallIds.has(key)) {
                     continue;
                   }
                   controller.enqueue({

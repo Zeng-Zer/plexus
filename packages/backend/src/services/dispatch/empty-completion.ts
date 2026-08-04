@@ -44,6 +44,7 @@ export interface CompletionVisibilitySignals {
   toolCallCount?: number;
   annotationCount?: number;
   imageCount?: number;
+  clientToolCallCount?: number;
 }
 
 /**
@@ -56,7 +57,8 @@ export function isEmptyCompletion(signals: CompletionVisibilitySignals): boolean
     signals.hasReasoning ||
     (signals.toolCallCount ?? 0) > 0 ||
     (signals.annotationCount ?? 0) > 0 ||
-    (signals.imageCount ?? 0) > 0
+    (signals.imageCount ?? 0) > 0 ||
+    (signals.clientToolCallCount ?? 0) > 0
   );
 }
 
@@ -85,6 +87,7 @@ type VisibilityCheckableResponse = Pick<
   | 'annotations'
   | 'finishReason'
   | 'image_generation_calls'
+  | 'client_tool_calls'
 > & { images?: unknown[] | null; rawResponse?: unknown };
 
 /**
@@ -123,6 +126,24 @@ function countRawImageGenerationCalls(rawResponse: unknown): number {
   return output.filter((item: any) => item?.type === 'image_generation_call').length;
 }
 
+/**
+ * Counts typed `client_tool_calls` entries (see UnifiedClientToolCall in
+ * types/unified.ts) — client-executed built-in tool-call items like
+ * `tool_search_call`. Unlike image_generation_calls, every item that
+ * survives the transformer's `isClientExecutedToolItem` gate is included
+ * unconditionally (no "has a result" narrowing), so the typed carry alone is
+ * a complete signal — no raw fallback is needed: `transformResponse` runs
+ * even on the bypass-transformation path (see dispatcher.ts's
+ * `handleNonStreamingResponse`), so this field is always populated when a
+ * client-executed tool-call item is present. Without this count, a
+ * lite-mode turn whose only output is a pending `tool_search_call` would be
+ * misclassified as empty and needlessly failed over — the same failure mode
+ * this PR fixes, one layer down.
+ */
+function countClientToolCalls(clientToolCalls: UnifiedChatResponse['client_tool_calls']): number {
+  return Array.isArray(clientToolCalls) ? clientToolCalls.length : 0;
+}
+
 /** Extracts visibility signals from a fully-materialized non-streaming response. */
 export function getResponseVisibilitySignals(
   response: VisibilityCheckableResponse
@@ -137,6 +158,7 @@ export function getResponseVisibilitySignals(
       countTypedImageGenerationCalls(response.image_generation_calls) +
       (Array.isArray(response.images) ? response.images.length : 0) +
       countRawImageGenerationCalls(response.rawResponse),
+    clientToolCallCount: countClientToolCalls(response.client_tool_calls),
   };
 }
 
@@ -181,6 +203,7 @@ export interface StreamVisibilityTracker {
   toolCallCount: number;
   annotationCount: number;
   imageCount: number;
+  clientToolCallCount: number;
 }
 
 export function createStreamVisibilityTracker(): StreamVisibilityTracker {
@@ -190,6 +213,7 @@ export function createStreamVisibilityTracker(): StreamVisibilityTracker {
     toolCallCount: 0,
     annotationCount: 0,
     imageCount: 0,
+    clientToolCallCount: 0,
   };
 }
 
@@ -198,11 +222,15 @@ export function createStreamVisibilityTracker(): StreamVisibilityTracker {
  * Only inspects `delta.content` / `delta.tool_calls` / `delta.reasoning_content`
  * / `delta.thinking` (plus a defensive, forward-compatible `annotations`/
  * `images` check — no current transformer streams either) — it never
- * stores the actual delta text anywhere.
+ * stores the actual delta text anywhere. `client_tool_calls` is a
+ * CHUNK-level field (like `image_generation_calls`), not inside `delta` —
+ * see UnifiedChatStreamChunk in types/unified.ts — so it's read off `chunk`
+ * directly; the responses transformer emits it on a `delta: {}` chunk, which
+ * the `!delta` guard below still lets through (an empty object is truthy).
  */
 export function observeStreamChunk(
   tracker: StreamVisibilityTracker,
-  chunk: Pick<UnifiedChatStreamChunk, 'delta'> & {
+  chunk: Pick<UnifiedChatStreamChunk, 'delta' | 'client_tool_calls'> & {
     annotations?: unknown[] | null;
     images?: unknown[] | null;
   }
@@ -225,6 +253,9 @@ export function observeStreamChunk(
   }
   if (Array.isArray(chunk.images) && chunk.images.length > 0) {
     tracker.imageCount += chunk.images.length;
+  }
+  if (Array.isArray(chunk.client_tool_calls) && chunk.client_tool_calls.length > 0) {
+    tracker.clientToolCallCount += chunk.client_tool_calls.length;
   }
 }
 

@@ -322,7 +322,14 @@ export async function executeStandardAttempt(
           // handling below instead of retrying this target again.
         }
 
-        if (planLiteToolStrip(errorText, liteToolStripState)) {
+        // Gated on targetApiType so an unrelated 400 that happens to match
+        // the (fairly specific) error pattern can never trigger a strip on a
+        // non-lite target — the pattern match alone was already unlikely to
+        // misfire, but this removes the class of risk entirely for free.
+        if (
+          targetApiType.toLowerCase() === 'responses:lite' &&
+          planLiteToolStrip(errorText, liteToolStripState)
+        ) {
           const stripResult = stripLiteUnsupportedTools(providerPayload);
           if (stripResult.strippedCount > 0) {
             providerPayload = stripResult.payload;

@@ -1,6 +1,6 @@
 import type { UnifiedChatRequest } from '../../types/unified';
 import { getConfig } from '../../config';
-import { getApiBaseType } from '../../utils/api-format';
+import { getApiBaseType, getApiSubtype } from '../../utils/api-format';
 import { logger } from '../../utils/logger';
 import { applyModelBehaviors } from '../models/model-behaviors';
 import type { RouteResult } from '../routing/router';
@@ -66,17 +66,23 @@ function shouldUsePassThrough(
   }
 
   // Only force the transform pipeline when the target fell back to the bare
-  // `responses` type (no explicit Lite support advertised). A target that
-  // matches the `responses:lite` subtype EXACTLY has been deliberately
-  // configured as Codex-native — verified live against both providers
-  // currently marked `responses:lite` (see dispatcher-api-subtype.test.ts):
-  // both correctly parse raw `additional_tools`/`custom`/`namespace` wire
-  // extensions and invoke tools without flattening. That's the whole point
-  // of the subtype: avoid the transform pipeline where the target has opted
-  // in. Providers that only match on the base type haven't made that claim,
-  // so they still get the defensive flatten.
+  // `responses` type (no explicit Lite support advertised) — NOT any
+  // `responses:<subtype>` match. A target that matches the `responses:lite`
+  // subtype EXACTLY has been deliberately configured as Codex-native —
+  // verified live against both providers currently marked `responses:lite`
+  // (see dispatcher-api-subtype.test.ts): both correctly parse raw
+  // `additional_tools`/`custom`/`namespace` wire extensions and invoke tools
+  // without flattening. That's the whole point of the subtype: avoid the
+  // transform pipeline where the target has opted in. Providers that only
+  // match on the base type haven't made that claim, so they still get the
+  // defensive flatten. Checked via getApiBaseType/getApiSubtype (not a naive
+  // `=== 'responses'` string compare) so this expresses the actual intent —
+  // "base type only, no subtype" — rather than "not literally 'responses'",
+  // which would silently stop flattening for any FUTURE `responses:<other>`
+  // subtype too, not just `lite`.
   if (
-    targetApiType.toLowerCase() === 'responses' &&
+    getApiBaseType(targetApiType) === 'responses' &&
+    getApiSubtype(targetApiType) !== 'lite' &&
     hasCodexResponsesExtensions(request.originalBody)
   ) {
     return false;
@@ -205,13 +211,26 @@ export async function buildRequestPayload(
   if (!nativeOAuth && targetApiType.toLowerCase() === 'responses:lite') {
     payload = {
       ...payload,
-      reasoning: {
-        ...(payload.reasoning || {}),
-        context: payload.reasoning?.context ?? 'all_turns',
-      },
+      // Only default `context` when the payload already has a `reasoning`
+      // object — injecting one from nothing would send `reasoning` to a
+      // non-reasoning model routed through a lite target, and /v1/responses
+      // rejects that as an unsupported parameter. A genuinely reasoning
+      // model (the only kind Codex CLI's lite mode targets in practice)
+      // always sends `reasoning` itself, so this never needed to default
+      // the object's presence, only the missing `context` field within it.
+      ...(payload.reasoning
+        ? { reasoning: { ...payload.reasoning, context: payload.reasoning.context ?? 'all_turns' } }
+        : {}),
       parallel_tool_calls: false,
     };
-    payload = stripLiteUnsupportedTools(payload).payload;
+    const toolStripResult = stripLiteUnsupportedTools(payload);
+    if (toolStripResult.strippedCount > 0) {
+      logger.debug(
+        `Auto-compat: proactively stripped ${toolStripResult.strippedCount} tool(s) unsupported ` +
+          `by responses:lite for ${route.provider}/${route.model}`
+      );
+    }
+    payload = toolStripResult.payload;
   }
 
   // Native OAuth (currently Anthropic): the payload above is already the correct
