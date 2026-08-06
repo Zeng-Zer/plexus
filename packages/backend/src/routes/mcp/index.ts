@@ -1,13 +1,166 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import bearerAuth from '@fastify/bearer-auth';
-import { createAuthHook } from '../../utils/auth';
+import formbody from '@fastify/formbody';
+import { getConfig } from '../../config';
+import { attachPlexusApiKeyAuth, isRequestIpAllowed, validatePlexusApiKey } from '../../utils/auth';
 import { logger } from '../../utils/logger';
 import * as mcpProxyService from '../../services/mcp-proxy/mcp-proxy-service';
 import { getClientIp } from '../../utils/ip';
 import { McpUsageStorageService } from '../../services/mcp-proxy/mcp-usage-storage';
 import { registerPlexusMcpRoutes } from './plexus';
+import { getMcpAuthProvider } from '../../services/mcp-oauth/provider-factory';
+import {
+  getMcpProtectedResourceMetadataUrl,
+  getMcpServerNameFromRequest,
+} from '../../services/mcp-oauth/url';
+import { MCP_OAUTH_ACCESS_TOKEN_PREFIX } from '../../services/mcp-oauth/plexus-idp-provider';
 
 const DEFAULT_TIMEOUT_MS = 120000;
+
+// C3: JSON-RPC methods that mutate external state require the `mcp:write`
+// scope. `mcp:write` includes read access, so a batch containing both write
+// and read methods is correctly authorized by the write scope.
+const MCP_WRITE_METHODS = new Set(['tools/call']);
+
+// Required scope for an MCP proxy operation. The mutating surface is the
+// JSON-RPC `tools/call` request issued over POST; listing, streaming
+// (GET), session lifecycle (DELETE), and all other JSON-RPC methods are
+// read-scoped. Returns `mcp:write` for write operations (which also grants
+// read access), and `mcp:read` otherwise.
+function requiredScopeForOperation(request: FastifyRequest): 'mcp:read' | 'mcp:write' {
+  if (request.method === 'POST') {
+    const methods = mcpProxyService.extractJsonRpcMethods(request.body);
+    if (methods.some((method) => MCP_WRITE_METHODS.has(method))) {
+      return 'mcp:write';
+    }
+  }
+  return 'mcp:read';
+}
+
+function scopeAllowsOperation(scopes: string[], required: 'mcp:read' | 'mcp:write'): boolean {
+  return scopes.includes(required) || (required === 'mcp:read' && scopes.includes('mcp:write'));
+}
+
+function authErrorResponse(message: string) {
+  return { error: { message, type: 'auth_error', code: 401 } };
+}
+
+function oauthUnavailableReply(reply: FastifyReply) {
+  return reply.code(404).send({
+    error: {
+      message: 'MCP OAuth is disabled',
+      type: 'oauth_disabled',
+      code: 404,
+    },
+  });
+}
+
+function getStringHeader(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+}
+
+function extractBearerCredential(authorization: string): string {
+  return authorization.toLowerCase().startsWith('bearer ')
+    ? authorization.slice('bearer '.length)
+    : authorization;
+}
+
+function setInitialOAuthChallenge(request: FastifyRequest, reply: FastifyReply) {
+  const metadataUrl = getMcpProtectedResourceMetadataUrl(request);
+  if (metadataUrl) {
+    reply.header('WWW-Authenticate', `Bearer resource_metadata="${metadataUrl}"`);
+  }
+}
+
+function setInvalidTokenChallenge(reply: FastifyReply) {
+  reply.header('WWW-Authenticate', 'Bearer error="invalid_token"');
+}
+
+function mcpOAuthFallbackAuth(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  done: (error?: Error) => void
+) {
+  const authorization = getStringHeader(request.headers.authorization);
+  const xApiKey = getStringHeader(request.headers['x-api-key']);
+  const xGoogApiKey = getStringHeader(request.headers['x-goog-api-key']);
+  const queryKey =
+    request.query && typeof request.query === 'object'
+      ? typeof (request.query as any).key === 'string'
+        ? (request.query as any).key
+        : null
+      : null;
+
+  const tryRawApiKey = (secret: string): boolean => {
+    const result = validatePlexusApiKey(secret, request);
+    if (!result) return false;
+    attachPlexusApiKeyAuth(request, result);
+    return true;
+  };
+
+  const rejectBearer = () => {
+    setInvalidTokenChallenge(reply);
+    reply.code(401).send(authErrorResponse('Invalid bearer token'));
+  };
+
+  if (authorization) {
+    const credential = extractBearerCredential(authorization);
+    if (tryRawApiKey(credential)) {
+      done();
+      return;
+    }
+
+    const provider = getMcpAuthProvider();
+    if (credential.startsWith(MCP_OAUTH_ACCESS_TOKEN_PREFIX) && provider) {
+      void provider
+        .validateToken(credential, request)
+        .then((oauthResult) => {
+          if (oauthResult) {
+            const config = getConfig();
+            const keyConfig = config.keys?.[oauthResult.keyName];
+            if (
+              keyConfig &&
+              isRequestIpAllowed(request, keyConfig.allowedIps, config.trustedProxies)
+            ) {
+              attachPlexusApiKeyAuth(request, {
+                keyName: oauthResult.keyName,
+                keyConfig,
+                attribution: null,
+              });
+              // C3: retain the OAuth token's granted scopes so the
+              // protected-resource hook can enforce them against the
+              // operation's required scope (read vs write).
+              (request as any).mcpOAuthScopes = oauthResult.scopes;
+              done();
+              return;
+            }
+          }
+
+          rejectBearer();
+        })
+        .catch((error: unknown) => {
+          done(error instanceof Error ? error : new Error(String(error)));
+        });
+      return;
+    }
+
+    rejectBearer();
+    return;
+  }
+
+  const apiKeyStyleCredential = xApiKey ?? xGoogApiKey ?? queryKey;
+  if (apiKeyStyleCredential) {
+    if (tryRawApiKey(apiKeyStyleCredential)) {
+      done();
+      return;
+    }
+    reply.code(401).send(authErrorResponse('Invalid API key'));
+    return;
+  }
+
+  setInitialOAuthChallenge(request, reply);
+  reply.code(401).send(authErrorResponse('Authentication required'));
+}
 
 // streamUpstreamResponse proxies an upstream MCP event-stream to the client,
 // writing the head via reply.raw so it is flushed immediately. Fastify's
@@ -67,90 +220,129 @@ export async function registerMcpRoutes(
   fastify: FastifyInstance,
   mcpUsageStorage: McpUsageStorageService
 ) {
-  // OAuth 2.0 Discovery endpoints (public, no auth required)
-  // These inform clients that we use Bearer token auth, not OAuth flow
-  fastify.get('/.well-known/oauth-authorization-server', async (_request, reply) => {
+  // Discovery, DCR, and OAuth endpoints are always registered (matching
+  // what openapi.json advertises) so a config change toggling MCP OAuth takes
+  // effect without a process restart. Each handler resolves the auth provider
+  // via getMcpAuthProvider() at request time; when MCP OAuth is disabled the
+  // provider is null and the endpoint reports that the feature is off.
+  await fastify.register(formbody);
+
+  fastify.get('/.well-known/oauth-authorization-server', async (request, reply) => {
+    const provider = getMcpAuthProvider();
+    if (!provider) return oauthUnavailableReply(reply);
     logger.silly('OAuth authorization server discovery');
-    return reply.send({
-      issuer: '/',
-      authorization_endpoint: '/oauth/authorize',
-      token_endpoint: '/oauth/token',
-      grant_types_supported: ['client_credentials', 'bearer'],
-      token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
-      resource_supported: true,
-    });
+    return reply.send(provider.getDiscoveryMetadata(request));
   });
 
-  fastify.get('/.well-known/oauth-protected-resource', async (_request, reply) => {
+  fastify.get('/.well-known/oauth-protected-resource/mcp/:name', async (request, reply) => {
+    const provider = getMcpAuthProvider();
+    if (!provider) return oauthUnavailableReply(reply);
+    const serverName = getMcpServerNameFromRequest(request);
+    if (!serverName || !mcpProxyService.getMcpServerConfig(serverName)) {
+      return reply.code(404).send({
+        error: {
+          message: 'MCP server not found or disabled',
+          type: 'not_found',
+          code: 404,
+        },
+      });
+    }
     logger.silly('OAuth protected resource discovery');
-    return reply.send({
-      resource: '/',
-      authorization_servers: ['/'],
-      scopes_supported: ['read', 'write'],
-      bearer_methods_supported: ['header', 'body', 'query'],
-    });
+    return reply.send(provider.getProtectedResourceMetadata(request));
   });
 
-  fastify.get('/.well-known/openid-configuration', async (_request, reply) => {
-    logger.silly('OpenID configuration discovery');
-    return reply.send({
-      issuer: '/',
-      authorization_endpoint: '/oauth/authorize',
-      token_endpoint: '/oauth/token',
-      jwks_uri: '/.well-known/jwks.json',
-      response_types_supported: ['code'],
-      id_token_signing_alg_values_supported: ['RS256'],
-    });
+  fastify.get('/oauth/authorize', async (request, reply) => {
+    const provider = getMcpAuthProvider();
+    if (!provider) return oauthUnavailableReply(reply);
+    return provider.handleAuthorize(request, reply);
   });
-
-  fastify.post('/register', async (_request, reply) => {
-    logger.silly('Dynamic client registration');
-    return reply.code(201).send({
-      client_id: 'plexus-mcp-static',
-      client_id_issued_at: Math.floor(Date.now() / 1000),
-      client_secret: 'not-supported-use-api-key',
-      grant_types: ['client_credentials', 'bearer'],
-      token_endpoint_auth_method: 'none',
-    });
+  fastify.post('/oauth/authorize', async (request, reply) => {
+    const provider = getMcpAuthProvider();
+    if (!provider) return oauthUnavailableReply(reply);
+    return provider.handleAuthorize(request, reply);
+  });
+  fastify.post('/oauth/token', async (request, reply) => {
+    const provider = getMcpAuthProvider();
+    if (!provider) return oauthUnavailableReply(reply);
+    return provider.handleToken(request, reply);
+  });
+  fastify.post('/oauth/register', async (request, reply) => {
+    const provider = getMcpAuthProvider();
+    if (!provider) return oauthUnavailableReply(reply);
+    return provider.handleRegister(request, reply);
   });
 
   await registerPlexusMcpRoutes(fastify, mcpUsageStorage);
 
   fastify.register(async (protectedRoutes) => {
-    const auth = createAuthHook();
+    // C1: single request-time auth hook. It handles raw API keys, OAuth bearer
+    // tokens, and api-key-style headers. OAuth token validation is a no-op when
+    // MCP OAuth is disabled (getMcpAuthProvider() returns null), so the hook
+    // reflects the current config value on every request rather than only at
+    // route registration time.
+    protectedRoutes.addHook('onRequest', mcpOAuthFallbackAuth);
 
-    protectedRoutes.addHook('onRequest', auth.onRequest);
+    // C3: enforce OAuth scopes at the protected resource once the body is
+    // available. Requests authenticated with a raw API key carry no scope
+    // restriction; OAuth-authenticated requests are constrained to the scopes
+    // granted on their access token.
+    protectedRoutes.addHook('preHandler', (request, reply, done) => {
+      const scopes = (request as any).mcpOAuthScopes as string[] | undefined;
+      if (scopes) {
+        const required = requiredScopeForOperation(request);
+        if (!scopeAllowsOperation(scopes, required)) {
+          reply.header(
+            'WWW-Authenticate',
+            `Bearer error="insufficient_scope", scope="${required}"`
+          );
+          reply.code(403).send({
+            error: {
+              message: `OAuth token lacks required scope '${required}' for this MCP operation`,
+              type: 'insufficient_scope',
+              code: 403,
+            },
+          });
+          return;
+        }
+      }
+      done();
+    });
 
-    await protectedRoutes.register(bearerAuth, auth.bearerAuthOptions);
-
-    protectedRoutes.addHook('preHandler', async (request, reply) => {
+    protectedRoutes.addHook('preHandler', (request, reply, done) => {
       const serverName = (request.params as any)?.name;
 
       if (!serverName) {
-        return reply
-          .code(400)
-          .send({ error: { message: 'Server name is required', type: 'invalid_request' } });
+        reply.code(400).send({
+          error: {
+            message: 'Server name is required',
+            type: 'invalid_request',
+          },
+        });
+        return;
       }
 
       if (!mcpProxyService.validateServerName(serverName)) {
-        return reply.code(400).send({
+        reply.code(400).send({
           error: {
             message: 'Invalid server name. Must be slug-safe: [a-z0-9][a-z0-9-_]{1,62}',
             type: 'invalid_request',
           },
         });
+        return;
       }
 
       const serverConfig = mcpProxyService.getMcpServerConfig(serverName);
 
       if (!serverConfig) {
-        return reply.code(404).send({
+        reply.code(404).send({
           error: {
             message: `MCP server '${serverName}' not found or disabled`,
             type: 'not_found',
           },
         });
+        return;
       }
+      done();
     });
 
     protectedRoutes.post(
@@ -216,14 +408,14 @@ export async function registerMcpRoutes(
 
         if (result.error) {
           if (result.status === 502) {
-            return reply
-              .code(502)
-              .send({ error: { message: result.error, type: 'upstream_error' } });
+            return reply.code(502).send({
+              error: { message: result.error, type: 'upstream_error' },
+            });
           }
           if (result.status === 504) {
-            return reply
-              .code(504)
-              .send({ error: { message: result.error, type: 'upstream_timeout' } });
+            return reply.code(504).send({
+              error: { message: result.error, type: 'upstream_timeout' },
+            });
           }
           return reply
             .code(result.status)
@@ -250,7 +442,10 @@ export async function registerMcpRoutes(
     protectedRoutes.get(
       '/mcp/:name',
       async (
-        request: FastifyRequest<{ Params: { name: string }; Querystring: Record<string, string> }>,
+        request: FastifyRequest<{
+          Params: { name: string };
+          Querystring: Record<string, string>;
+        }>,
         reply: FastifyReply
       ) => {
         const { name: serverName } = request.params;
@@ -305,14 +500,14 @@ export async function registerMcpRoutes(
 
         if (result.error) {
           if (result.status === 502) {
-            return reply
-              .code(502)
-              .send({ error: { message: result.error, type: 'upstream_error' } });
+            return reply.code(502).send({
+              error: { message: result.error, type: 'upstream_error' },
+            });
           }
           if (result.status === 504) {
-            return reply
-              .code(504)
-              .send({ error: { message: result.error, type: 'upstream_timeout' } });
+            return reply.code(504).send({
+              error: { message: result.error, type: 'upstream_timeout' },
+            });
           }
           return reply
             .code(result.status)
@@ -387,14 +582,14 @@ export async function registerMcpRoutes(
 
         if (result.error) {
           if (result.status === 502) {
-            return reply
-              .code(502)
-              .send({ error: { message: result.error, type: 'upstream_error' } });
+            return reply.code(502).send({
+              error: { message: result.error, type: 'upstream_error' },
+            });
           }
           if (result.status === 504) {
-            return reply
-              .code(504)
-              .send({ error: { message: result.error, type: 'upstream_timeout' } });
+            return reply.code(504).send({
+              error: { message: result.error, type: 'upstream_timeout' },
+            });
           }
           return reply
             .code(result.status)
