@@ -98,6 +98,8 @@ interface ProgressUpdate {
   requestId: string;
   bytesReceived: number;
   bytesPerSec: number | null;
+  semanticBytesReceived?: number;
+  semanticBytesPerSec?: number | null;
   isStreamed: boolean;
   state: 'DISPATCHED' | 'GRACE_PERIOD' | 'MONITORING' | 'THROUGHPUT_STALLED';
   elapsedMs: number;
@@ -861,15 +863,18 @@ const DesktopLogRow = React.memo(
                 ? e2eOutputTokens / (log.durationMs / 1000)
                 : null;
             if (progress) {
+              const semanticBytesReceived =
+                progress.semanticBytesReceived ?? progress.bytesReceived;
+              const semanticBytesPerSec = progress.semanticBytesPerSec ?? progress.bytesPerSec;
               const bytesPerToken = getEstimatedBytesPerToken({
                 ...log,
                 isStreamed: progress.isStreamed,
               });
               const effectiveBytesPerSec =
-                progress.bytesPerSec != null && progress.bytesPerSec > 0
-                  ? progress.bytesPerSec
-                  : progress.elapsedMs > 0 && progress.bytesReceived > 0
-                    ? (progress.bytesReceived / progress.elapsedMs) * 1000
+                semanticBytesPerSec != null && semanticBytesPerSec > 0
+                  ? semanticBytesPerSec
+                  : progress.elapsedMs > 0 && semanticBytesReceived > 0
+                    ? (semanticBytesReceived / progress.elapsedMs) * 1000
                     : null;
               const estTokensPerSec =
                 effectiveBytesPerSec != null &&
@@ -891,7 +896,15 @@ const DesktopLogRow = React.memo(
                     }}
                   >
                     <CloudDownload size={12} className="text-yellow-400" />
-                    <span>{formatBytes(progress.bytesReceived)}</span>
+                    <span>
+                      {formatBytes(progress.bytesReceived)}
+                      {semanticBytesReceived !== progress.bytesReceived && (
+                        <span title="Bytes from token-producing stream events used for the live token estimate">
+                          {' · '}
+                          {formatBytes(semanticBytesReceived)} token bytes
+                        </span>
+                      )}
+                    </span>
                   </span>
                   {progress.bytesPerSec != null && (
                     <span
@@ -916,7 +929,7 @@ const DesktopLogRow = React.memo(
                         alignItems: 'center',
                         gap: '4px',
                       }}
-                      title={`Estimated tokens/sec (~${Math.round(bytesPerToken)} bytes/token accounting for SSE + JSON framing)`}
+                      title={`Estimated tokens/sec (~${Math.round(bytesPerToken)} bytes/token for this API's streamed token events)`}
                     >
                       <Zap size={12} className="text-amber-400" />
                       <span>~{formatTPS(estTokensPerSec)} tok/s</span>
