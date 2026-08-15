@@ -20,6 +20,17 @@ describe('raw passthrough config schemas', () => {
     expect(parsed.success).toBe(true);
   });
 
+  test('accepts Cursor as a Plexus-owned OAuth provider', () => {
+    expect(
+      ProviderConfigSchema.safeParse({
+        api_base_url: 'oauth://',
+        api_key: 'oauth',
+        oauth_provider: 'cursor',
+        oauth_account: 'work',
+      }).success
+    ).toBe(true);
+  });
+
   test('rejects raw passthrough for OAuth providers', () => {
     const parsed = ProviderConfigSchema.safeParse({
       api_base_url: 'oauth://',

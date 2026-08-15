@@ -61,7 +61,8 @@ export function ProviderOAuthEditor({
         <div>
           <div className="font-body text-[13px] font-medium text-text">OAuth Authentication</div>
           <div className="text-[11px] text-text-secondary">
-            Tokens are saved to auth.json after login.
+            Credentials are encrypted when ENCRYPTION_KEY is configured. Cursor API keys expire and
+            require re-login.
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -155,7 +156,7 @@ export function ProviderOAuthEditor({
 
       {oauthStatus === 'success' && (
         <div className="text-[11px] text-success" style={{ marginBottom: '8px' }}>
-          Authentication complete. Tokens saved to auth.json.
+          Authentication complete. Credential saved to Plexus storage.
         </div>
       )}
 

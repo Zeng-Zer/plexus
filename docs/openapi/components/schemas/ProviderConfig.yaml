@@ -43,9 +43,10 @@ properties:
       credentials. Any OAuth-capable provider bundled with Plexus's pi-ai
       dependency is accepted (e.g. `anthropic`, `openai-codex`,
       `github-copilot`, `xai`, `kimi-coding`, `openrouter`) except `radius`,
-      which is not supported. See `GET /v0/management/oauth/providers` for
-      the current list. `google-gemini-cli` and `google-antigravity` are
-      deprecated and no longer supported — they are rejected on write.
+      which is not supported. `cursor` is a Plexus-owned Cursor SDK flow.
+      See `GET /v0/management/oauth/providers` for the current list.
+      `google-gemini-cli` and `google-antigravity` are deprecated and no
+      longer supported — they are rejected on write.
   oauth_account:
     type: string
     description: >

@@ -1,6 +1,7 @@
 import { getCatalogModels } from '../pi-ai/catalog';
 import { getProviderTypes, type ProviderConfig } from '../../config';
 import { logger } from '../../utils/logger';
+import { OAuthAuthManager } from '../oauth/oauth-auth-manager';
 
 export interface DiscoveredModel {
   id: string;
@@ -118,7 +119,26 @@ export async function fetchModelsFromUrl(
   }
 }
 
-export function getOAuthProviderModels(providerId: string): DiscoveredModel[] {
+export async function getOAuthProviderModels(
+  providerId: string,
+  accountId?: string
+): Promise<DiscoveredModel[]> {
+  if (providerId === 'cursor') {
+    if (!accountId?.trim()) throw new Error('accountId is required for Cursor model discovery.');
+    const apiKey = await OAuthAuthManager.getInstance().getApiKey('cursor', accountId);
+    const { Cursor } = await import('@cursor/sdk');
+    const models = await Cursor.models.list({ apiKey });
+    return models.map((model) => ({
+      id: model.id,
+      name: model.displayName || model.id,
+      object: 'model',
+      owned_by: 'cursor',
+      context_length: 128_000,
+      pricing: { prompt: '0', completion: '0' },
+      description: model.description,
+    }));
+  }
+
   return getCatalogModels(providerId).map((model) => ({
     id: model.id,
     name: model.name,
@@ -149,7 +169,7 @@ export function deriveModelsUrl(provider: ProviderConfig): string | null {
 
 export async function discoverProviderModels(provider: ProviderConfig): Promise<DiscoveredModel[]> {
   if (provider.oauth_provider) {
-    return getOAuthProviderModels(provider.oauth_provider);
+    return getOAuthProviderModels(provider.oauth_provider, provider.oauth_account);
   }
 
   const modelsUrl = deriveModelsUrl(provider);

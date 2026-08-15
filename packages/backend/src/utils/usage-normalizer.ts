@@ -135,9 +135,12 @@ export function normalizeOpenAIChatUsage(usage: any): UsageSubset {
   const outputTokens = safeToken(usage?.completion_tokens);
   const reasoningTokens = safeToken(usage?.completion_tokens_details?.reasoning_tokens);
 
-  // OpenAI chat prompt_tokens generally includes cached tokens, but guard for edge payloads.
+  // OpenAI chat prompt_tokens generally includes cached reads and cache writes.
+  // Subtract both when present so provider-specific cache-write details are not
+  // also counted as uncached input.
+  const combinedNonNew = cachedTokens + cacheWriteTokens;
   const inputTokens =
-    cachedTokens > promptTokens ? promptTokens : Math.max(0, promptTokens - cachedTokens);
+    combinedNonNew > promptTokens ? promptTokens : Math.max(0, promptTokens - combinedNonNew);
 
   return {
     input_tokens: inputTokens,

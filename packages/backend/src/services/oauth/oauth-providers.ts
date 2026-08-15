@@ -30,6 +30,8 @@ export interface OAuthProviderDescriptor {
   usesCallbackServer: boolean;
   /** pi-ai's OAuth flow implementation (login/refresh/toAuth). */
   oauth: OAuthAuth;
+  /** False when expired credentials require a new login instead of refresh. */
+  refreshable?: boolean;
 }
 
 /** Providers whose login flow runs a local callback server. */
@@ -42,6 +44,44 @@ const CALLBACK_SERVER_PROVIDERS = new Set(['anthropic', 'openai-codex']);
 const BLOCKED_PROVIDERS = new Set(['radius']);
 
 const models = builtinModels();
+
+const cursorOAuth: OAuthAuth = {
+  name: 'Cursor Subscription',
+  async login(interaction) {
+    const { Cursor } = await import('@cursor/sdk');
+    const result = await Cursor.auth.login({
+      openBrowser: false,
+      store: null,
+      signal: interaction.signal,
+      onLoginUrl: (url) =>
+        interaction.notify({
+          type: 'auth_url',
+          url,
+          instructions: 'Open this URL to sign in to Cursor and authorize Plexus.',
+        }),
+    });
+    return {
+      type: 'oauth',
+      access: result.apiKey,
+      refresh: '',
+      expires: result.apiKeyExpiresAtMs,
+    };
+  },
+  async refresh() {
+    throw new Error('Cursor API key expired. Re-run OAuth login for this Cursor account.');
+  },
+  async toAuth(credentials) {
+    return { apiKey: credentials.access };
+  },
+};
+
+const cursorDescriptor: OAuthProviderDescriptor = {
+  id: 'cursor',
+  name: 'Cursor Subscription',
+  usesCallbackServer: false,
+  oauth: cursorOAuth,
+  refreshable: false,
+};
 
 function toDescriptor(providerId: string): OAuthProviderDescriptor | undefined {
   if (BLOCKED_PROVIDERS.has(providerId)) return undefined;
@@ -58,18 +98,21 @@ function toDescriptor(providerId: string): OAuthProviderDescriptor | undefined {
 
 /** Resolve an OAuth provider by id; undefined when unknown, blocked, or OAuth-less. */
 export function getOAuthProviderAuth(providerId: string): OAuthProviderDescriptor | undefined {
-  return toDescriptor(providerId);
+  return providerId === 'cursor' ? cursorDescriptor : toDescriptor(providerId);
 }
 
 /** List all built-in providers that support OAuth login (excluding blocked ones). */
 export function listOAuthProviders(): OAuthProviderDescriptor[] {
-  return models
-    .getProviders()
-    .map((provider) => toDescriptor(provider.id))
-    .filter((descriptor): descriptor is OAuthProviderDescriptor => descriptor !== undefined);
+  return [
+    ...models
+      .getProviders()
+      .map((provider) => toDescriptor(provider.id))
+      .filter((descriptor): descriptor is OAuthProviderDescriptor => descriptor !== undefined),
+    cursorDescriptor,
+  ];
 }
 
 /** Whether `providerId` is a usable OAuth provider (for config validation). */
 export function isKnownOAuthProviderId(providerId: string): boolean {
-  return toDescriptor(providerId) !== undefined;
+  return getOAuthProviderAuth(providerId) !== undefined;
 }

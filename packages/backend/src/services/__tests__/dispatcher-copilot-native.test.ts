@@ -1,7 +1,11 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest';
 import { setConfigForTesting } from '../../config';
 import { OAuthAuthManager } from '../oauth/oauth-auth-manager';
-import { copilotWireApiType, isNativeOAuthProvider } from '../oauth/oauth-native-request';
+import {
+  copilotWireApiType,
+  isNativeOAuthProvider,
+  nativeOAuthApiType,
+} from '../oauth/oauth-native-request';
 import { registerSpy } from '../../../test/test-utils';
 import type { UnifiedChatRequest } from '../../types/unified';
 
@@ -104,8 +108,10 @@ describe('copilotWireApiType', () => {
   test('defaults unknown/custom model ids to chat completions', () => {
     expect(copilotWireApiType(undefined)).toBe('chat');
   });
-  test('github-copilot is a native OAuth provider', () => {
+  test('github-copilot and cursor are native OAuth providers', () => {
     expect(isNativeOAuthProvider('github-copilot')).toBe(true);
+    expect(isNativeOAuthProvider('cursor')).toBe(true);
+    expect(nativeOAuthApiType('cursor', 'cursor-model')).toBe('chat');
   });
 });
 

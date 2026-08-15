@@ -334,7 +334,7 @@ export class OAuthLoginSessionManager {
 
     try {
       const credentials: OAuthCredentials = await provider.oauth.login(interaction);
-      authManager.setCredentials(session.providerId, session.accountId, credentials);
+      await authManager.setCredentials(session.providerId, session.accountId, credentials);
       session.status = 'success';
       session.error = undefined;
       session.prompt = undefined;

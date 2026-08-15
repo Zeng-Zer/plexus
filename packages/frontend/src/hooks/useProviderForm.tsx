@@ -717,7 +717,10 @@ export function useProviderForm() {
       setIsFetchingModels(true);
       setFetchError(null);
       try {
-        const models = await api.getOAuthProviderModels(oauthProvider);
+        const models = await api.getOAuthProviderModels(
+          oauthProvider,
+          editingProvider.oauthAccount?.trim()
+        );
         const sortedModels = [...models].sort((a, b) => a.id.localeCompare(b.id));
         if (sortedModels.length === 0) {
           setFetchError(`No models found for OAuth provider '${oauthProvider}'.`);

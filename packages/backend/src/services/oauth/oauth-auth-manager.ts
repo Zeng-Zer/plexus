@@ -107,6 +107,7 @@ export class OAuthAuthManager {
       });
     } catch (error: any) {
       logger.error('OAuth: Failed to save credentials to database:', error);
+      throw error;
     }
   }
 
@@ -142,17 +143,16 @@ export class OAuthAuthManager {
       throw new Error('OAuth: accountId is required to store credentials');
     }
 
+    await this.saveToDatabase(provider, accountId, credentials);
+
     if (!this.authData[provider]) {
       this.authData[provider] = { accounts: {} };
     }
-
     this.authData[provider].accounts[accountId] = {
       type: 'oauth',
       ...credentials,
     } as OAuthCredentials;
     this.lastRefreshAt.set(`${provider}/${accountId}`, Date.now());
-
-    await this.saveToDatabase(provider, accountId, credentials);
   }
 
   async getApiKey(
@@ -191,12 +191,19 @@ export class OAuthAuthManager {
     const now = Date.now();
     let current = credentials;
     const lastRefresh = this.lastRefreshAt.get(refreshKey);
+    const expired = current.expires <= now;
     const refreshRequested =
-      current.expires <= now ||
-      (options.refreshIfOlderThanMs !== undefined &&
+      expired ||
+      (descriptor.refreshable !== false &&
+        options.refreshIfOlderThanMs !== undefined &&
         (lastRefresh === undefined || now - lastRefresh >= options.refreshIfOlderThanMs));
 
     if (refreshRequested) {
+      if (descriptor.refreshable === false) {
+        throw new Error(
+          `OAuth: ${descriptor.name} credential expired. Re-run OAuth login for account '${resolvedAccountId}'.`
+        );
+      }
       const signal = options.signal ?? new AbortController().signal;
       const existingRefresh = this.refreshPromises.get(refreshKey);
       if (existingRefresh) {
@@ -252,9 +259,9 @@ export class OAuthAuthManager {
       `OAuth: getApiKey for ${provider}/${accountId} — token WAS refreshed. ` +
         `new_refresh=${current.refresh ? `present(${current.refresh.length} chars)` : 'MISSING'}`
     );
+    await this.saveToDatabase(provider, accountId, current);
     this.authData[provider]!.accounts[accountId] = current;
     this.lastRefreshAt.set(refreshKey, Date.now());
-    await this.saveToDatabase(provider, accountId, current);
     return current;
   }
 
@@ -273,6 +280,13 @@ export class OAuthAuthManager {
 
     const providerRecord = this.authData[provider];
     return !!providerRecord && Object.keys(providerRecord.accounts).length > 0;
+  }
+
+  isCredentialReady(provider: OAuthProvider, accountId?: string | null): boolean {
+    const credentials = this.getCredentials(provider, accountId);
+    if (!credentials) return false;
+    const descriptor = getOAuthProviderAuth(provider);
+    return descriptor?.refreshable !== false || credentials.expires > Date.now();
   }
 
   async deleteCredentials(provider: OAuthProvider, accountId: string): Promise<boolean> {

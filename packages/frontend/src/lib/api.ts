@@ -2879,7 +2879,8 @@ export const api = {
   },
 
   getOAuthProviderModels: async (
-    providerId: string
+    providerId: string,
+    accountId?: string
   ): Promise<
     {
       id: string;
@@ -2888,7 +2889,9 @@ export const api = {
       pricing?: { prompt?: string; completion?: string };
     }[]
   > => {
-    const query = new URLSearchParams({ providerId }).toString();
+    const params = new URLSearchParams({ providerId });
+    if (accountId) params.set('accountId', accountId);
+    const query = params.toString();
     const res = await fetchWithAuth(`${API_BASE}/v0/management/oauth/models?${query}`);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));

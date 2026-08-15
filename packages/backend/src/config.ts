@@ -214,7 +214,8 @@ const ModelProviderConfigSchema = z.object({
 // Validated dynamically against every OAuth-capable provider pi-ai ships
 // (see services/oauth/oauth-providers.ts) rather than a hardcoded enum, so
 // new pi-ai OAuth flows (e.g. xAI, Kimi Code, OpenRouter) are usable without
-// a Plexus code change. `radius` is deliberately excluded there.
+// a Plexus code change. `radius` is deliberately excluded there. `cursor` is
+// a Plexus-owned Cursor SDK flow registered in the same facade.
 //
 // Gemini CLI / Antigravity OAuth were removed upstream, so configs
 // referencing them are rejected on write; any persisted rows are purged at

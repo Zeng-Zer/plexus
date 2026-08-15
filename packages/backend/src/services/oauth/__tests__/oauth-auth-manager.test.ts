@@ -122,4 +122,86 @@ describe('OAuthAuthManager', () => {
 
     expect(mocks.refresh).not.toHaveBeenCalled();
   });
+
+  it('requires re-login for expired non-refreshable credentials', async () => {
+    mocks.configService.getAllOAuthProviders.mockResolvedValue([
+      { providerType: 'cursor', accountId: 'work' },
+    ]);
+    mocks.configService.getOAuthCredentials.mockResolvedValue({
+      accessToken: 'expired-cursor-key',
+      refreshToken: '',
+      expiresAt: 0,
+    });
+    mocks.getOAuthProviderAuth.mockReturnValue({
+      name: 'Cursor Subscription',
+      refreshable: false,
+      oauth: { refresh: mocks.refresh, toAuth: mocks.toAuth },
+    });
+    const manager = await createManager();
+
+    await expect(manager.getApiKey('cursor', 'work')).rejects.toThrow(
+      "OAuth: Cursor Subscription credential expired. Re-run OAuth login for account 'work'."
+    );
+    expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+
+  it('reports expired non-refreshable credentials as not ready', async () => {
+    mocks.configService.getAllOAuthProviders.mockResolvedValue([
+      { providerType: 'cursor', accountId: 'work' },
+    ]);
+    mocks.configService.getOAuthCredentials.mockResolvedValue({
+      accessToken: 'expired-cursor-key',
+      refreshToken: '',
+      expiresAt: 0,
+    });
+    mocks.getOAuthProviderAuth.mockReturnValue({
+      name: 'Cursor Subscription',
+      refreshable: false,
+      oauth: { refresh: mocks.refresh, toAuth: mocks.toAuth },
+    });
+    const manager = await createManager();
+
+    expect(manager.hasProvider('cursor', 'work')).toBe(true);
+    expect(manager.isCredentialReady('cursor', 'work')).toBe(false);
+  });
+
+  it('does not fake proactive refresh for a valid non-refreshable credential', async () => {
+    mocks.configService.getAllOAuthProviders.mockResolvedValue([
+      { providerType: 'cursor', accountId: 'work' },
+    ]);
+    mocks.configService.getOAuthCredentials.mockResolvedValue({
+      accessToken: 'valid-cursor-key',
+      refreshToken: '',
+      expiresAt: Date.now() + 60_000,
+    });
+    mocks.getOAuthProviderAuth.mockReturnValue({
+      name: 'Cursor Subscription',
+      refreshable: false,
+      oauth: { refresh: mocks.refresh, toAuth: mocks.toAuth },
+    });
+    const manager = await createManager();
+
+    await expect(manager.getApiKey('cursor', 'work', { refreshIfOlderThanMs: 0 })).resolves.toBe(
+      'valid-cursor-key'
+    );
+    expect(mocks.refresh).not.toHaveBeenCalled();
+    expect(manager.isCredentialReady('cursor', 'work')).toBe(true);
+  });
+
+  it('does not retain credentials in memory when database persistence fails', async () => {
+    mocks.configService.setOAuthCredentials.mockRejectedValueOnce(
+      new Error('database unavailable')
+    );
+    const manager = await createManager();
+
+    await expect(
+      manager.setCredentials('cursor', 'work', {
+        type: 'oauth',
+        access: 'cursor-key',
+        refresh: '',
+        expires: Date.now() + 60_000,
+      })
+    ).rejects.toThrow('database unavailable');
+    expect(manager.hasProvider('cursor', 'work')).toBe(false);
+  });
 });
