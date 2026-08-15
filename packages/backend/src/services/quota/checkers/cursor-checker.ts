@@ -8,6 +8,8 @@ interface CursorUsageAmount {
   remaining?: number;
   limit?: number;
   remainingBonus?: boolean;
+  autoPercentUsed?: number;
+  apiPercentUsed?: number;
 }
 
 interface CursorSpendLimitUsage {
@@ -121,30 +123,63 @@ export default defineChecker({
     const onDemandRemaining = pooled ? spend?.pooledRemaining : spend?.individualRemaining;
     const hasOnDemandMeter =
       typeof onDemandLimit === 'number' && Number.isFinite(onDemandLimit) && onDemandLimit > 0;
+    const autoPercentUsed = usage.planUsage.autoPercentUsed;
+    const apiPercentUsed = usage.planUsage.apiPercentUsed;
+    const hasSplitUsage =
+      typeof autoPercentUsed === 'number' &&
+      Number.isFinite(autoPercentUsed) &&
+      typeof apiPercentUsed === 'number' &&
+      Number.isFinite(apiPercentUsed);
+    const hasSplitCapacity = hasSplitUsage && (autoPercentUsed < 100 || apiPercentUsed < 100);
     const hasIncludedCapacity =
-      (typeof usage.planUsage.remaining === 'number' && usage.planUsage.remaining > 0) ||
+      hasSplitCapacity ||
+      (!hasSplitUsage &&
+        typeof usage.planUsage.remaining === 'number' &&
+        usage.planUsage.remaining > 0) ||
       usage.planUsage.remainingBonus === true;
     const hasOnDemandCapacity =
       hasOnDemandMeter &&
       typeof onDemandRemaining === 'number' &&
       Number.isFinite(onDemandRemaining) &&
       onDemandRemaining > 0;
-    const meters: Meter[] = [
+    const includedThreshold =
+      hasOnDemandCapacity || hasSplitCapacity || usage.planUsage.remainingBonus === true
+        ? 101
+        : 100;
+    const includedMeter = (key: string, label: string, used: number): Meter =>
       ctx.allowance({
-        key: 'included_spend',
-        label: 'Cursor included usage',
-        unit: 'usd',
-        limit: cents(usage.planUsage.limit),
-        used: cents(usage.planUsage.includedSpend),
-        remaining: cents(usage.planUsage.remaining),
+        key,
+        label,
+        unit: 'percentage',
+        limit: 100,
+        used: Math.max(0, used),
+        remaining: Math.max(0, 100 - used),
         periodValue: 1,
         periodUnit: 'month',
         periodCycle: 'fixed',
         resetsAt,
-        exhaustionThreshold:
-          hasOnDemandCapacity || usage.planUsage.remainingBonus === true ? 101 : 100,
-      }),
-    ];
+        exhaustionThreshold: includedThreshold,
+      });
+    const meters: Meter[] = hasSplitUsage
+      ? [
+          includedMeter('cursor_models', 'Cursor Models', autoPercentUsed),
+          includedMeter('other_models', 'Other Models', apiPercentUsed),
+        ]
+      : [
+          ctx.allowance({
+            key: 'included_spend',
+            label: 'Cursor included usage',
+            unit: 'usd',
+            limit: cents(usage.planUsage.limit),
+            used: cents(usage.planUsage.includedSpend),
+            remaining: cents(usage.planUsage.remaining),
+            periodValue: 1,
+            periodUnit: 'month',
+            periodCycle: 'fixed',
+            resetsAt,
+            exhaustionThreshold: includedThreshold,
+          }),
+        ];
 
     if (hasOnDemandMeter) {
       meters.push(

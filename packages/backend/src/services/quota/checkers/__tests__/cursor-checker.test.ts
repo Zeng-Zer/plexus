@@ -17,7 +17,7 @@ describe('cursor checker', () => {
     OAuthAuthManager.resetForTesting();
   });
 
-  it('exchanges the OAuth API key and returns current-cycle included allowance', async () => {
+  it('reports separate Cursor and other-model allowances when Cursor returns both', async () => {
     const authManager = OAuthAuthManager.getInstance();
     registerSpy(authManager, 'getApiKey').mockResolvedValue('crsr_test');
     global.fetch = vi
@@ -37,6 +37,8 @@ describe('cursor checker', () => {
               remaining: 7500,
               limit: 10000,
               totalSpend: 2500,
+              autoPercentUsed: 12.3456,
+              apiPercentUsed: 67.8901,
             },
             spendLimitUsage: { limitType: 'user' },
           }),
@@ -69,18 +71,100 @@ describe('cursor checker', () => {
     );
     expect(meters).toEqual([
       expect.objectContaining({
-        key: 'included_spend',
-        label: 'Cursor included usage',
+        key: 'cursor_models',
+        label: 'Cursor Models',
         kind: 'allowance',
-        unit: 'usd',
+        unit: 'percentage',
         limit: 100,
-        used: 25,
-        remaining: 75,
+        used: 12.3456,
         periodValue: 1,
         periodUnit: 'month',
         periodCycle: 'fixed',
         resetsAt: '2030-01-01T00:00:00.000Z',
         status: 'ok',
+        exhaustionThreshold: 101,
+      }),
+      expect.objectContaining({
+        key: 'other_models',
+        label: 'Other Models',
+        unit: 'percentage',
+        limit: 100,
+        used: 67.8901,
+        exhaustionThreshold: 101,
+      }),
+    ]);
+    expect(meters[0]?.remaining).toBeCloseTo(87.6544);
+    expect(meters[1]?.remaining).toBeCloseTo(32.1099);
+  });
+
+  it('falls back to aggregate included spend when split percentages are absent', async () => {
+    registerSpy(OAuthAuthManager.getInstance(), 'getApiKey').mockResolvedValue('crsr_test');
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ accessToken: 'session-token' }), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            billingCycleEnd: '1893456000000',
+            planUsage: { includedSpend: 2500, remaining: 7500, limit: 10000 },
+            spendLimitUsage: { limitType: 'user' },
+          }),
+          { status: 200 }
+        )
+      ) as unknown as typeof fetch;
+
+    const meters = await checkerDef.check(makeCtx());
+
+    expect(meters).toEqual([
+      expect.objectContaining({
+        key: 'included_spend',
+        label: 'Cursor included usage',
+        unit: 'usd',
+        limit: 100,
+        used: 25,
+        remaining: 75,
+        exhaustionThreshold: 100,
+      }),
+    ]);
+  });
+
+  it('allows provider cooldown only when both split pools are exhausted', async () => {
+    registerSpy(OAuthAuthManager.getInstance(), 'getApiKey').mockResolvedValue('crsr_test');
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ accessToken: 'session-token' }), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            billingCycleEnd: '1893456000000',
+            planUsage: {
+              includedSpend: 5000,
+              remaining: 0,
+              limit: 5000,
+              autoPercentUsed: 100,
+              apiPercentUsed: 100,
+            },
+            spendLimitUsage: { limitType: 'user' },
+          }),
+          { status: 200 }
+        )
+      ) as unknown as typeof fetch;
+
+    const meters = await checkerDef.check(makeCtx());
+
+    expect(meters).toEqual([
+      expect.objectContaining({
+        key: 'cursor_models',
+        status: 'exhausted',
+        exhaustionThreshold: 100,
+      }),
+      expect.objectContaining({
+        key: 'other_models',
+        status: 'exhausted',
         exhaustionThreshold: 100,
       }),
     ]);
