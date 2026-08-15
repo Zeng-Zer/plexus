@@ -80,7 +80,7 @@ describe('config quota checker validation', () => {
             api_base_url: 'oauth://',
             api_key: 'oauth',
             oauth_provider: 'cursor',
-            oauth_account: 'personal',
+            oauth_account: 'fixture-account',
             quota_checker: { type: 'cursor' },
           },
         },
@@ -97,7 +97,7 @@ describe('config quota checker validation', () => {
         intervalMinutes: 30,
         options: expect.objectContaining({
           oauthProvider: 'cursor',
-          oauthAccountId: 'personal',
+          oauthAccountId: 'fixture-account',
         }),
       }),
     ]);

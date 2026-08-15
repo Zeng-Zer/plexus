@@ -1,5 +1,5 @@
 /**
- * Plexus's OAuth provider facade over pi-ai's built-in providers.
+ * Plexus's OAuth provider facade.
  *
  * pi-ai 0.80.8 removed the pi-ai/oauth provider registry — OAuth is now owned
  * by each built-in Provider as `provider.auth.oauth` (login/refresh/toAuth).
@@ -16,11 +16,11 @@ export type OAuthProviderId = string;
 
 export interface OAuthProviderDescriptor {
   id: string;
-  /** Display name from pi-ai (e.g. "Anthropic (Claude Pro/Max)"). */
+  /** Display name shown by Plexus. */
   name: string;
   /** Whether login runs a local callback server with manual code fallback. */
   usesCallbackServer: boolean;
-  /** pi-ai's OAuth flow implementation (login/refresh/toAuth). */
+  /** OAuth flow implementation (login/refresh/toAuth). */
   oauth: OAuthAuth;
   /** False when expired credentials require a new login instead of refresh. */
   refreshable?: boolean;
@@ -86,7 +86,7 @@ export function getOAuthProviderAuth(providerId: string): OAuthProviderDescripto
   return providerId === 'cursor' ? cursorDescriptor : toDescriptor(providerId);
 }
 
-/** List all built-in providers that support OAuth login. */
+/** List all providers that support OAuth login. */
 export function listOAuthProviders(): OAuthProviderDescriptor[] {
   return [
     ...models

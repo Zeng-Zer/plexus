@@ -7,6 +7,7 @@ interface CursorUsageAmount {
   includedSpend?: number;
   remaining?: number;
   limit?: number;
+  remainingBonus?: boolean;
 }
 
 interface CursorSpendLimitUsage {
@@ -113,6 +114,21 @@ export default defineChecker({
     if (!usage.planUsage) throw new Error('cursor usage response missing planUsage');
 
     const resetsAt = resetTime(usage.billingCycleEnd);
+    const spend = usage.spendLimitUsage;
+    const pooled = spend?.limitType === 'team';
+    const onDemandLimit = pooled ? spend?.pooledLimit : spend?.individualLimit;
+    const onDemandUsed = pooled ? spend?.pooledUsed : spend?.individualUsed;
+    const onDemandRemaining = pooled ? spend?.pooledRemaining : spend?.individualRemaining;
+    const hasOnDemandMeter =
+      typeof onDemandLimit === 'number' && Number.isFinite(onDemandLimit) && onDemandLimit > 0;
+    const hasIncludedCapacity =
+      (typeof usage.planUsage.remaining === 'number' && usage.planUsage.remaining > 0) ||
+      usage.planUsage.remainingBonus === true;
+    const hasOnDemandCapacity =
+      hasOnDemandMeter &&
+      typeof onDemandRemaining === 'number' &&
+      Number.isFinite(onDemandRemaining) &&
+      onDemandRemaining > 0;
     const meters: Meter[] = [
       ctx.allowance({
         key: 'included_spend',
@@ -125,30 +141,28 @@ export default defineChecker({
         periodUnit: 'month',
         periodCycle: 'fixed',
         resetsAt,
+        exhaustionThreshold:
+          hasOnDemandCapacity || usage.planUsage.remainingBonus === true ? 101 : 100,
       }),
     ];
 
-    const spend = usage.spendLimitUsage;
-    if (spend) {
-      const pooled = spend.limitType === 'team';
-      const limit = pooled ? spend.pooledLimit : spend.individualLimit;
-      if (typeof limit === 'number' && Number.isFinite(limit) && limit > 0) {
-        meters.push(
-          ctx.allowance({
-            key: 'on_demand_spend',
-            label: 'Cursor on-demand limit',
-            unit: 'usd',
-            limit: cents(limit),
-            used: cents(pooled ? spend.pooledUsed : spend.individualUsed),
-            remaining: cents(pooled ? spend.pooledRemaining : spend.individualRemaining),
-            periodValue: 1,
-            periodUnit: 'month',
-            periodCycle: 'fixed',
-            resetsAt,
-            scope: pooled ? 'team' : 'user',
-          })
-        );
-      }
+    if (hasOnDemandMeter) {
+      meters.push(
+        ctx.allowance({
+          key: 'on_demand_spend',
+          label: 'Cursor on-demand limit',
+          unit: 'usd',
+          limit: cents(onDemandLimit),
+          used: cents(onDemandUsed),
+          remaining: cents(onDemandRemaining),
+          periodValue: 1,
+          periodUnit: 'month',
+          periodCycle: 'fixed',
+          resetsAt,
+          scope: pooled ? 'team' : 'user',
+          exhaustionThreshold: hasIncludedCapacity ? 101 : 100,
+        })
+      );
     }
 
     return meters;

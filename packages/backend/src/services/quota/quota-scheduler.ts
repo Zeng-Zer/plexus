@@ -159,22 +159,27 @@ export class QuotaScheduler {
     let isExhausted = false;
     let latestResetMs: number | null = null;
     let exhaustedMeterLabel: string | null = null;
+    let exhaustedMeterThreshold = exhaustionThreshold;
 
     for (const meter of result.meters) {
       const util = meter.utilizationPercent;
-      const utilExhausted = typeof util === 'number' && util >= exhaustionThreshold;
-      const statusExhausted = meter.status === 'exhausted';
+      const meterThreshold = meter.exhaustionThreshold ?? exhaustionThreshold;
+      const utilExhausted = typeof util === 'number' && util >= meterThreshold;
+      const statusExhausted =
+        meter.status === 'exhausted' && meter.exhaustionThreshold === undefined;
 
       if (utilExhausted || statusExhausted) {
         isExhausted = true;
         if (!exhaustedMeterLabel) {
           exhaustedMeterLabel = meter.label;
+          exhaustedMeterThreshold = meterThreshold;
         }
         const resetMs = meter.resetsAt ? new Date(meter.resetsAt).getTime() : null;
         if (resetMs !== null && resetMs > Date.now()) {
           if (latestResetMs === null || resetMs > latestResetMs) {
             latestResetMs = resetMs;
             exhaustedMeterLabel = meter.label;
+            exhaustedMeterThreshold = meterThreshold;
           }
         }
       }
@@ -186,7 +191,7 @@ export class QuotaScheduler {
 
       logger.info(
         `Provider '${provider}' quota exhausted` +
-          ` (meter: ${exhaustedMeterLabel}, threshold: ${exhaustionThreshold}%, checker: ${result.checkerId}).` +
+          ` (meter: ${exhaustedMeterLabel}, threshold: ${exhaustedMeterThreshold}%, checker: ${result.checkerId}).` +
           (latestResetMs !== null
             ? ` Injecting provider-wide cooldown for ${Math.round(durationMs / 1000)}s.`
             : ` Injecting provider-wide indefinite cooldown until reset/balance recovery.`)
@@ -195,7 +200,7 @@ export class QuotaScheduler {
         provider,
         '',
         durationMs,
-        `quota exhausted (threshold: ${exhaustionThreshold}%) — ${exhaustedMeterLabel}`
+        `quota exhausted (threshold: ${exhaustedMeterThreshold}%) — ${exhaustedMeterLabel}`
       );
     } else {
       const strictestThreshold = this.getStrictestThresholdForProvider(provider);

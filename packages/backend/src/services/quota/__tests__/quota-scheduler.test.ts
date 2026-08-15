@@ -413,6 +413,57 @@ describe('QuotaScheduler maxUtilizationPercent', () => {
     });
   });
 
+  it('honors a meter-specific threshold for sequential allowances', async () => {
+    const scheduler = QuotaScheduler.getInstance() as any;
+    const config = makeConfig({ provider: PROVIDER });
+    scheduler.configs.set('sequential-checker', config);
+
+    const included = {
+      ...makeMeter(100),
+      key: 'included',
+      label: 'Included allowance',
+      exhaustionThreshold: 101,
+    };
+    const onDemand = {
+      ...makeMeter(25),
+      key: 'on_demand',
+      label: 'On-demand allowance',
+    };
+
+    await scheduler.applyCooldownsFromResult(
+      {
+        checkerId: 'sequential-checker',
+        checkerType: 'cursor',
+        provider: PROVIDER,
+        checkedAt: new Date().toISOString(),
+        success: true,
+        meters: [included, onDemand],
+      },
+      config
+    );
+    expect(await CooldownManager.getInstance().isProviderHealthy(PROVIDER, '')).toBe(true);
+
+    await scheduler.applyCooldownsFromResult(
+      {
+        checkerId: 'sequential-checker',
+        checkerType: 'cursor',
+        provider: PROVIDER,
+        checkedAt: new Date().toISOString(),
+        success: true,
+        meters: [
+          included,
+          {
+            ...makeMeter(100),
+            key: 'on_demand',
+            label: 'On-demand allowance',
+          },
+        ],
+      },
+      config
+    );
+    expect(await CooldownManager.getInstance().isProviderHealthy(PROVIDER, '')).toBe(false);
+  });
+
   describe('Routing.run cooldown regression', () => {
     const makeRoutingRunConfig = () =>
       makeConfig({ id: ROUTING_RUN_CHECKER_ID, provider: ROUTING_RUN_PROVIDER });
