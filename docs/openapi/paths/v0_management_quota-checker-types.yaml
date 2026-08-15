@@ -46,15 +46,33 @@ get:
               - nanogpt
               - zai
               - moonshot
+              - novita
               - minimax
+              - minimax-coding
               - openrouter
               - kilo
               - openai-codex
+              - kimi-code
               - claude-code
               - copilot
+              - cursor
               - wisdomgate
               - apertis
-            count: 13
+              - poe
+              - routing-run
+              - ollama
+              - neuralwatt
+              - zenmux
+              - devpass
+              - wafer
+              - opencode-go
+              - crof
+              - exedev
+              - hyper
+              - deepseek
+              - sakana
+              - cline
+            count: 31
     '401':
       description: Authentication required or invalid credentials.
   operationId: getV0ManagementQuotacheckertypes

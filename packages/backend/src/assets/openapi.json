@@ -5937,16 +5937,34 @@
                     "nanogpt",
                     "zai",
                     "moonshot",
+                    "novita",
                     "minimax",
+                    "minimax-coding",
                     "openrouter",
                     "kilo",
                     "openai-codex",
+                    "kimi-code",
                     "claude-code",
                     "copilot",
+                    "cursor",
                     "wisdomgate",
-                    "apertis"
+                    "apertis",
+                    "poe",
+                    "routing-run",
+                    "ollama",
+                    "neuralwatt",
+                    "zenmux",
+                    "devpass",
+                    "wafer",
+                    "opencode-go",
+                    "crof",
+                    "exedev",
+                    "hyper",
+                    "deepseek",
+                    "sakana",
+                    "cline"
                   ],
-                  "count": 13
+                  "count": 31
                 }
               }
             }

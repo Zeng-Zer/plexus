@@ -72,6 +72,37 @@ describe('config quota checker validation', () => {
     });
   });
 
+  it('accepts cursor quota checker and injects OAuth account metadata', () => {
+    const config = validateConfig(
+      JSON.stringify({
+        providers: {
+          cursor: {
+            api_base_url: 'oauth://',
+            api_key: 'oauth',
+            oauth_provider: 'cursor',
+            oauth_account: 'personal',
+            quota_checker: { type: 'cursor' },
+          },
+        },
+        models: {},
+        keys: {},
+      })
+    );
+
+    expect(config.quotas).toEqual([
+      expect.objectContaining({
+        id: 'cursor',
+        provider: 'cursor',
+        type: 'cursor',
+        intervalMinutes: 30,
+        options: expect.objectContaining({
+          oauthProvider: 'cursor',
+          oauthAccountId: 'personal',
+        }),
+      }),
+    ]);
+  });
+
   it('accepts minimax quota checker when groupid and token are provided', () => {
     const config = validateConfig(
       makeConfigJson({

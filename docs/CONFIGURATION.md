@@ -420,6 +420,7 @@ Quota checkers monitor upstream provider rate limits and prevent routing to exha
 | `nanogpt` | NanoGPT usage |
 | `openai-codex` | Codex quota (OAuth) | Reads token from database |
 | `claude-code` | Claude Code quota (OAuth) | Reads token from database |
+| `cursor` | Cursor subscription allowance (OAuth) | Exchanges the stored Cursor API key against Cursor's undocumented usage API |
 | `zai` | ZAI balance |
 | `moonshot` | Moonshot balance |
 | `novita` | Novita balance |
