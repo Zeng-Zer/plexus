@@ -8115,7 +8115,7 @@
           "Management — OAuth"
         ],
         "summary": "List models known to an OAuth provider (admin only)",
-        "description": "Returns the list of models available from a specific OAuth provider.\n\n## Data source\n\nThis endpoint returns models from the pi-ai static catalog. It's used\nto populate dropdowns in the UI when configuring provider targets.\n\n## Response fields\n\n- `id` — Model identifier (e.g. `gpt-5.4`)\n- `name` — Human-readable model name\n- `context_length` — Maximum context window in tokens\n- `pricing` — Token pricing (if available)\n\n## Note\n\nThis is a static catalog — it doesn't query the provider's live API.\nUse `/v1/openrouter/models` or `/v1/models` to get the currently\nconfigured model list.\n\n**Admin only** — limited principals receive 403.\n",
+        "description": "Returns the list of models available from a specific OAuth provider.\n\n## Data source\n\nThis endpoint returns models from the pi-ai static catalog, except Cursor,\nwhich queries the official Cursor SDK using the selected OAuth account. It's\nused to populate dropdowns in the UI when configuring provider targets.\n\n## Response fields\n\n- `id` — Model identifier (e.g. `gpt-5.4`)\n- `name` — Human-readable model name\n- `context_length` — Maximum context window in tokens\n- `pricing` — Token pricing (if available)\n\n## Note\n\nCursor model discovery is account-aware and requires `accountId`; other\nOAuth provider catalogs are static. Use `/v1/openrouter/models` or\n`/v1/models` to get the currently configured model list.\n\n**Admin only** — limited principals receive 403.\n",
         "security": [
           {
             "AdminKey": []
@@ -8130,11 +8130,20 @@
               "type": "string"
             },
             "description": "Provider ID to list models for."
+          },
+          {
+            "in": "query",
+            "name": "accountId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "OAuth account ID. Required for Cursor model discovery."
           }
         ],
         "responses": {
           "200": {
-            "description": "Model list (pi-ai static catalog).",
+            "description": "OAuth provider model list.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8172,6 +8181,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Invalid provider/account parameters or model discovery failure."
           },
           "401": {
             "description": "Authentication required or invalid credentials."
@@ -11316,10 +11328,9 @@
               "anthropic",
               "openai-codex",
               "github-copilot",
-              "google-gemini-cli",
-              "google-antigravity"
+              "cursor"
             ],
-            "description": "OAuth provider identifier. Required when `api_base_url` uses an `oauth://` URI. Determines which OAuth flow is used to obtain credentials. Note: `google-gemini-cli` and `google-antigravity` are deprecated and no longer supported — they remain accepted for backward compatibility but are rejected at request routing.\n"
+            "description": "OAuth provider identifier. Required when `api_base_url` uses an `oauth://` URI. Determines which OAuth flow is used to obtain credentials.\n"
           },
           "oauth_account": {
             "type": "string",

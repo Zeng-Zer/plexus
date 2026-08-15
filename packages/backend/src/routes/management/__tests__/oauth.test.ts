@@ -4,6 +4,8 @@ import type { OAuthProviderDescriptor } from '../../../services/oauth/oauth-prov
 import { registerOAuthRoutes } from '../oauth';
 import { OAuthLoginSessionManager } from '../../../services/oauth/oauth-login-session';
 import { OAuthAuthManager } from '../../../services/oauth/oauth-auth-manager';
+import { registerSpy } from '../../../../test/test-utils';
+import { ConfigService } from '../../../services/configuration/config-service';
 
 // @earendil-works/pi-ai is mocked globally in vitest.setup.ts — do not add a
 // per-file vi.mock() call here.  With isolate: false all files share one
@@ -34,6 +36,12 @@ describe('OAuth management routes', () => {
 
   beforeEach(async () => {
     OAuthAuthManager.resetForTesting();
+    registerSpy(ConfigService, 'getInstance').mockReturnValue({
+      getAllOAuthProviders: async () => [],
+      getOAuthCredentials: async () => null,
+      setOAuthCredentials: async () => undefined,
+      deleteOAuthCredentials: async () => undefined,
+    });
 
     const provider: OAuthProviderDescriptor = {
       id: 'test-provider',
@@ -120,6 +128,27 @@ describe('OAuth management routes', () => {
     expect(authManager.hasProvider('test-provider' as any, accountId)).toBe(false);
   });
 
+  it('does not report login success when credential persistence fails', async () => {
+    registerSpy(OAuthAuthManager.getInstance(), 'setCredentials').mockRejectedValue(
+      new Error('database unavailable')
+    );
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/v0/management/oauth/sessions',
+      payload: { providerId: 'test-provider', accountId: 'work' },
+    });
+    const session = response.json() as { data: { id: string } };
+    await waitForStatus(fastify, session.data.id, 'awaiting_prompt');
+    await fastify.inject({
+      method: 'POST',
+      url: `/v0/management/oauth/sessions/${session.data.id}/prompt`,
+      payload: { value: 'test-code' },
+    });
+
+    const failed = await waitForStatus(fastify, session.data.id, 'error');
+    expect((failed.data as { error?: string }).error).toBe('database unavailable');
+  });
+
   it('accepts manual code input for callback flows', async () => {
     const accountId = 'personal';
     const manualProvider: OAuthProviderDescriptor = {
@@ -183,6 +212,18 @@ describe('OAuth management routes', () => {
     // Credentials are now stored in the database, not auth.json.
     const authManager = OAuthAuthManager.getInstance();
     expect(authManager.hasProvider('manual-provider' as any, accountId)).toBe(true);
+  });
+
+  it('reports expired non-refreshable credentials as not ready', async () => {
+    registerSpy(OAuthAuthManager.getInstance(), 'isCredentialReady').mockReturnValue(false);
+
+    const response = await fastify.inject({
+      method: 'GET',
+      url: '/v0/management/oauth/credentials/status?providerId=cursor&accountId=work',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ data: { ready: false } });
   });
 
   it('fetches OAuth provider models', async () => {

@@ -41,6 +41,7 @@ import {
 import type { RenamePair } from '../../transformers/oauth/masking/types';
 import { CodexVersionService } from './codex-version-service';
 import { stripUnsupportedGpt5Options } from '../../transformers/adapters/suppress-unsupported-gpt5-options.adapter';
+import { CURSOR_SDK_TRANSPORT_URL } from './cursor-sdk-executor';
 
 /**
  * Auth for a native Anthropic request. Two modes, mirroring the old executor:
@@ -568,6 +569,17 @@ export function prepareOAuthNativeRequest(
       options?.apiType ?? 'chat'
     );
   }
+  if (provider === 'cursor') {
+    if (auth.mode !== 'oauth') {
+      throw new Error('Cursor native OAuth requires an OAuth token (apiKey mode unsupported).');
+    }
+    return {
+      url: CURSOR_SDK_TRANSPORT_URL,
+      headers: { Authorization: `Bearer ${auth.token}` },
+      body: nativeBody,
+      reverseResponseFrame: (frame) => frame,
+    };
+  }
   // The caller gates on isNativeOAuthProvider; reaching here is a programming error.
   logger.error(`OAuth native path not implemented for provider '${provider}'`);
   throw new Error(`OAuth native request preparation not implemented for provider '${provider}'`);
@@ -578,7 +590,12 @@ export function prepareOAuthNativeRequest(
  * All ported providers: Anthropic (M1), Codex (M2), and GitHub Copilot (M3).
  */
 export function isNativeOAuthProvider(provider: string | undefined): boolean {
-  return provider === 'anthropic' || provider === 'openai-codex' || provider === 'github-copilot';
+  return (
+    provider === 'anthropic' ||
+    provider === 'openai-codex' ||
+    provider === 'github-copilot' ||
+    provider === 'cursor'
+  );
 }
 
 /**
@@ -595,6 +612,7 @@ export function isNativeOAuthProvider(provider: string | undefined): boolean {
 const NATIVE_OAUTH_API_TYPES: Record<string, string> = {
   anthropic: 'messages',
   'openai-codex': 'responses',
+  cursor: 'chat',
 };
 
 /** Map a pi-ai model `api` field to the plexus transformer/api-type name. */

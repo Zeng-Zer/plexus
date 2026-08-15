@@ -217,7 +217,7 @@ const ModelProviderConfigSchema = z.object({
 // persisted rows are purged at startup by
 // ConfigService.dropRetiredOAuthProviders() (which loads from DB columns, not
 // this schema, so old rows never fail to load before they are dropped).
-const OAuthProviderSchema = z.enum(['anthropic', 'openai-codex', 'github-copilot']);
+const OAuthProviderSchema = z.enum(['anthropic', 'openai-codex', 'github-copilot', 'cursor']);
 
 const NagaQuotaCheckerOptionsSchema = z.object({
   apiKey: z.string().min(1, 'Naga provisioning key is required'),

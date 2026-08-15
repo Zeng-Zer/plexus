@@ -4,6 +4,7 @@ export const oauthProviderTypeEnum = pgEnum('oauth_provider_type', [
   'anthropic',
   'openai-codex',
   'github-copilot',
+  'cursor',
   'google-gemini-cli',
   'google-antigravity',
 ]);

@@ -117,6 +117,7 @@ export async function buildRequestPayload(
     : route.config.oauth_provider || route.provider;
   const codexNative = nativeOAuth && oauthProviderForNative === 'openai-codex';
   const copilotNative = nativeOAuth && oauthProviderForNative === 'github-copilot';
+  const cursorNative = nativeOAuth && oauthProviderForNative === 'cursor';
   const codexCliPassthrough = codexNative && isCodexCliShapedBody(request.originalBody);
 
   let bypassTransformation: boolean;
@@ -277,7 +278,7 @@ export async function buildRequestPayload(
     const incomingIsMessages = incomingBaseType === 'messages';
     const nativeBypass = codexNative
       ? codexCliPassthrough || incomingIsResponses
-      : copilotNative
+      : copilotNative || cursorNative
         ? bypassTransformation
         : incomingIsMessages;
     return { payload: prepared.body, bypassTransformation: nativeBypass };

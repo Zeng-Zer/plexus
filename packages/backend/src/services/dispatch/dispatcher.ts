@@ -53,6 +53,7 @@ import {
   parseCooldownDurationForProvider,
   resolveCooldownProviderType,
 } from '../providers/provider-cooldown';
+import { executeCursorSdkRequest } from '../oauth/cursor-sdk-executor';
 
 interface ParseFailureContext {
   rawResponseText: string;
@@ -654,7 +655,10 @@ export class Dispatcher {
     payload: any,
     signal?: AbortSignal
   ): Promise<Response> {
-    return executeUpstreamRequest(url, headers, payload, signal);
+    return (
+      (await executeCursorSdkRequest(url, headers, payload, signal)) ??
+      executeUpstreamRequest(url, headers, payload, signal)
+    );
   }
 
   /**

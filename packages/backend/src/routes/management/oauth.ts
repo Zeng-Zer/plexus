@@ -26,6 +26,7 @@ const credentialStatusQuerySchema = z.object({
 
 const getModelsQuerySchema = z.object({
   providerId: z.string().min(1),
+  accountId: z.string().min(1).optional(),
 });
 
 const toProviderResponse = (provider: {
@@ -101,7 +102,7 @@ export async function registerOAuthRoutes(
     }
 
     const authManager = OAuthAuthManager.getInstance();
-    const ready = authManager.hasProvider(
+    const ready = authManager.isCredentialReady(
       parsed.data.providerId as OAuthProvider,
       parsed.data.accountId
     );
@@ -173,7 +174,7 @@ export async function registerOAuthRoutes(
     }
 
     try {
-      const modelList = getOAuthProviderModels(parsed.data.providerId);
+      const modelList = await getOAuthProviderModels(parsed.data.providerId, parsed.data.accountId);
       return reply.send({ data: modelList });
     } catch (error) {
       return reply

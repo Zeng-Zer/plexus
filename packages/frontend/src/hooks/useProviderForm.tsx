@@ -24,6 +24,7 @@ export const OAUTH_PROVIDERS = [
   { value: 'anthropic', label: 'Anthropic (Claude Code Pro/Max)' },
   { value: 'github-copilot', label: 'GitHub Copilot' },
   { value: 'openai-codex', label: 'ChatGPT Plus/Pro (Codex Subscription)' },
+  { value: 'cursor', label: 'Cursor Subscription' },
 ];
 // Gemini CLI / Antigravity OAuth were dropped; they are no
 // longer offered as new-provider options.
@@ -711,7 +712,10 @@ export function useProviderForm() {
       setIsFetchingModels(true);
       setFetchError(null);
       try {
-        const models = await api.getOAuthProviderModels(oauthProvider);
+        const models = await api.getOAuthProviderModels(
+          oauthProvider,
+          editingProvider.oauthAccount?.trim()
+        );
         const sortedModels = [...models].sort((a, b) => a.id.localeCompare(b.id));
         if (sortedModels.length === 0) {
           setFetchError(`No models found for OAuth provider '${oauthProvider}'.`);

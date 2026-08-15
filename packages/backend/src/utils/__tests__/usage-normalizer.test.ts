@@ -167,9 +167,11 @@ describe('usage-normalizer - OpenAI Chat usage', () => {
       },
     });
 
+    expect(normalized.input_tokens).toBe(36);
     expect(normalized.cache_creation_tokens).toBe(50);
     expect(normalized.cached_tokens).toBe(1920);
     expect(normalized.reasoning_tokens).toBe(10);
+    expect(normalized.total_tokens).toBe(2306);
   });
 
   test('normalizes DeepSeek top-level prompt_cache_hit_tokens / prompt_cache_miss_tokens', () => {

@@ -1,15 +1,31 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   deriveModelsUrl,
   discoverProviderModels,
+  getOAuthProviderModels,
   normalizeModelsResponse,
   validateUrlSafety,
 } from '../providers/provider-model-discovery';
 import type { ProviderConfig } from '../../config';
+import { OAuthAuthManager } from '../oauth/oauth-auth-manager';
+import { registerSpy } from '../../../test/test-utils';
+import { ConfigService } from '../configuration/config-service';
+
+const cursorSdk = vi.hoisted(() => ({ list: vi.fn() }));
+vi.mock('@cursor/sdk', () => ({ Cursor: { models: { list: cursorSdk.list } } }));
 
 describe('provider model discovery', () => {
+  beforeEach(() => {
+    OAuthAuthManager.resetForTesting();
+    registerSpy(ConfigService, 'getInstance').mockReturnValue({
+      getAllOAuthProviders: vi.fn(async () => []),
+    });
+    cursorSdk.list.mockReset();
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
+    OAuthAuthManager.resetForTesting();
   });
 
   it('derives OpenAI-compatible /models URLs from chat completion URLs', () => {
@@ -58,6 +74,30 @@ describe('provider model discovery', () => {
       valid: false,
       error: 'Cannot fetch from localhost',
     });
+  });
+
+  it('uses selected Cursor OAuth account for SDK model discovery', async () => {
+    const getApiKey = registerSpy(OAuthAuthManager.getInstance(), 'getApiKey').mockResolvedValue(
+      'cursor-key'
+    );
+    cursorSdk.list.mockResolvedValue([{ id: 'cursor-model', displayName: 'Cursor Model' }]);
+
+    await expect(getOAuthProviderModels('cursor', 'work')).resolves.toEqual([
+      expect.objectContaining({
+        id: 'cursor-model',
+        name: 'Cursor Model',
+        context_length: 128_000,
+        pricing: { prompt: '0', completion: '0' },
+      }),
+    ]);
+    expect(getApiKey).toHaveBeenCalledWith('cursor', 'work');
+    expect(cursorSdk.list).toHaveBeenCalledWith({ apiKey: 'cursor-key' });
+  });
+
+  it('requires an account for Cursor SDK model discovery', async () => {
+    await expect(getOAuthProviderModels('cursor')).rejects.toThrow(
+      'accountId is required for Cursor model discovery'
+    );
   });
 
   it('does not forward provider API keys to the public Ollama catalog', async () => {

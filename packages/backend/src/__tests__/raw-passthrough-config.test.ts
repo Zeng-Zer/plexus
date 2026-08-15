@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { KeyConfigSchema, ProviderConfigSchema } from '../config';
+import { oauthProviderTypeEnum } from '../../drizzle/schema/postgres/enums';
 
 describe('raw passthrough config schemas', () => {
   test('keeps raw key access optional and default-deny', () => {
@@ -18,6 +19,18 @@ describe('raw passthrough config schemas', () => {
       },
     });
     expect(parsed.success).toBe(true);
+  });
+
+  test('accepts Cursor in runtime config and PostgreSQL OAuth credential enum', () => {
+    expect(oauthProviderTypeEnum.enumValues).toContain('cursor');
+    expect(
+      ProviderConfigSchema.safeParse({
+        api_base_url: 'oauth://',
+        api_key: 'oauth',
+        oauth_provider: 'cursor',
+        oauth_account: 'work',
+      }).success
+    ).toBe(true);
   });
 
   test('rejects raw passthrough for OAuth providers', () => {
