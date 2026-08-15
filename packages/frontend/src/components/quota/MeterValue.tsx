@@ -1,5 +1,10 @@
 import React from 'react';
-import { formatCostIn, formatPointsFull, type FormatCostInOptions } from '../../lib/format';
+import {
+  formatCostIn,
+  formatPercent,
+  formatPointsFull,
+  type FormatCostInOptions,
+} from '../../lib/format';
 import { useCurrency } from '../../lib/CurrencyContext';
 
 type MeterCurrencyOptions = Pick<FormatCostInOptions, 'currency' | 'rate' | 'symbol'>;
@@ -26,7 +31,7 @@ export function formatMeterValue(
     case 'usd':
       return formatCostIn(value, { ...currency, decimals: 4 });
     case 'percentage':
-      return `${Math.round(value)}%`;
+      return formatPercent(value, 2);
     case 'points':
       return compact ? `${formatPointsFull(value)}` : `${formatPointsFull(value)} pts`;
     case 'kwh':

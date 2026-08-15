@@ -3,7 +3,7 @@ import { clsx } from 'clsx';
 import type { Meter, MeterStatus } from '../../types/quota';
 import { formatMeterValue } from './MeterValue';
 import { useCurrency } from '../../lib/CurrencyContext';
-import { countdownTickMs, formatResetCountdown } from '../../lib/format';
+import { countdownTickMs, formatPercent, formatResetCountdown } from '../../lib/format';
 import { useNow } from '../../hooks/useNow';
 
 interface AllowanceMeterRowProps {
@@ -69,7 +69,7 @@ export const AllowanceMeterRow: React.FC<AllowanceMeterRowProps> = ({
               className="text-[10px] tabular-nums text-text-muted flex-shrink-0"
               title={reset ? `Resets at ${reset.absolute}` : undefined}
             >
-              {pct !== null && `${Math.round(pct)}%`}
+              {pct !== null && formatPercent(pct, 2)}
               {pct !== null && reset && ' · '}
               {reset?.short}
             </span>
@@ -134,7 +134,7 @@ export const AllowanceMeterRow: React.FC<AllowanceMeterRowProps> = ({
                   : 'text-text-secondary'
             )}
           >
-            {Math.round(pct)}%
+            {formatPercent(pct, 2)}
           </span>
         )}
         {reset && (
