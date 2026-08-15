@@ -5,6 +5,7 @@ import type { SDKJsonValue } from '@cursor/sdk';
 
 const CURSOR_TRANSPORT = 'cursor-sdk://';
 const TOOL_WAIT_MS = 5 * 60 * 1000;
+const cursorModel = (id: string) => ({ id, params: [{ id: 'fast', value: 'false' }] });
 
 interface CursorUsage {
   inputTokens: number;
@@ -576,7 +577,7 @@ async function startCursorToolRequest(
 
   const createPromise = Agent.create({
     apiKey,
-    model: { id: payload.model },
+    model: cursorModel(payload.model),
     tools: ['mcp'],
     local: { cwd: workspace, settingSources: [], store, customTools },
   });
@@ -693,7 +694,7 @@ export async function executeCursorSdkRequest(
   try {
     const createPromise = Agent.create({
       apiKey,
-      model: { id: payload.model },
+      model: cursorModel(payload.model),
       tools: [],
       local: { cwd: workspace, settingSources: [], store },
     });

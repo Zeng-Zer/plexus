@@ -121,7 +121,7 @@ describe('Cursor SDK executor', () => {
     expect(sdk.create).toHaveBeenCalledWith(
       expect.objectContaining({
         apiKey: 'key',
-        model: { id: 'cursor-model' },
+        model: { id: 'cursor-model', params: [{ id: 'fast', value: 'false' }] },
         tools: [],
         local: expect.objectContaining({
           settingSources: [],
@@ -278,6 +278,7 @@ describe('Cursor SDK executor', () => {
     });
     expect(firstBody).toContain('"finish_reason":"tool_calls"');
     expect(sdk.create.mock.calls.at(-1)![0]).toMatchObject({
+      model: { id: 'cursor-model', params: [{ id: 'fast', value: 'false' }] },
       tools: ['mcp'],
       local: {
         customTools: {
