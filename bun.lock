@@ -23,6 +23,7 @@
       "name": "plexus-backend",
       "version": "1.0.0",
       "dependencies": {
+        "@bufbuild/protobuf": "^2.14.0",
         "@cursor/sdk": "1.0.28",
         "@earendil-works/pi-ai": "0.84.1",
         "@fastify/bearer-auth": "^10.1.3",
@@ -191,7 +192,7 @@
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.7", "", { "os": "win32", "cpu": "x64" }, "sha512-V+0wu/nrj2S+MhP4EQ0uHNolP0IALEsz45pg0WoKkHfDeh0+ItHwP/p7bX5RPoMOl9NkpHYWdYPhIcy2mACHvQ=="],
 
-    "@bufbuild/protobuf": ["@bufbuild/protobuf@1.10.0", "", {}, "sha512-QDdVFLoN93Zjg36NoQPZfsVH9tZew7wKDKyV5qRdj8ntT4wQCOradQjRaTdwMhWUYsgKsvCINKKm87FdEk96Ag=="],
+    "@bufbuild/protobuf": ["@bufbuild/protobuf@2.14.0", "", {}, "sha512-C3UGsiCwSprE2NKIIFA3hCDlpXTMCAXRZuEVp88L1GY36Y41+rYL5fryE+nOFhp4p4JPQvdV8PQ4DWgHgeTE+w=="],
 
     "@colors/colors": ["@colors/colors@1.6.0", "", {}, "sha512-Ir+AOibqzrIsL6ajt3Rz3LskB7OiMVHqltZmspbW/TJuTVuyOMirVqAkjfY6JISiLHgyNqicAC8AyHHGzNd/dA=="],
 
@@ -1628,6 +1629,14 @@
     "@aws-sdk/credential-provider-sso/@aws-sdk/token-providers": ["@aws-sdk/token-providers@3.1079.0", "", { "dependencies": { "@aws-sdk/core": "^3.974.27", "@aws-sdk/nested-clients": "^3.997.27", "@aws-sdk/types": "^3.973.15", "@smithy/core": "^3.29.0", "@smithy/types": "^4.15.1", "tslib": "^2.6.2" } }, "sha512-cbietrLlHPhhmbnMPTuDS4Zj/KNGhY+3vVhn6dwjO6Dqzrwothzg2srtcY34T9mlICsTXn34avDoWLHSntP54A=="],
 
     "@aws-sdk/nested-clients/@smithy/node-http-handler": ["@smithy/node-http-handler@4.9.3", "", { "dependencies": { "@smithy/core": "^3.29.1", "@smithy/types": "^4.15.1", "tslib": "^2.6.2" } }, "sha512-qZTa4gQFUo8RM02rk6q5UVTDLNrQ1oS20LsepBzqq1QBVc/EHJ03OOUADcqMZiXHArW+Y7+OGY0BpdTwZRq/Yg=="],
+
+    "@connectrpc/connect/@bufbuild/protobuf": ["@bufbuild/protobuf@1.10.0", "", {}, "sha512-QDdVFLoN93Zjg36NoQPZfsVH9tZew7wKDKyV5qRdj8ntT4wQCOradQjRaTdwMhWUYsgKsvCINKKm87FdEk96Ag=="],
+
+    "@connectrpc/connect-node/@bufbuild/protobuf": ["@bufbuild/protobuf@1.10.0", "", {}, "sha512-QDdVFLoN93Zjg36NoQPZfsVH9tZew7wKDKyV5qRdj8ntT4wQCOradQjRaTdwMhWUYsgKsvCINKKm87FdEk96Ag=="],
+
+    "@connectrpc/connect-web/@bufbuild/protobuf": ["@bufbuild/protobuf@1.10.0", "", {}, "sha512-QDdVFLoN93Zjg36NoQPZfsVH9tZew7wKDKyV5qRdj8ntT4wQCOradQjRaTdwMhWUYsgKsvCINKKm87FdEk96Ag=="],
+
+    "@cursor/sdk/@bufbuild/protobuf": ["@bufbuild/protobuf@1.10.0", "", {}, "sha512-QDdVFLoN93Zjg36NoQPZfsVH9tZew7wKDKyV5qRdj8ntT4wQCOradQjRaTdwMhWUYsgKsvCINKKm87FdEk96Ag=="],
 
     "@cursor/sdk/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
