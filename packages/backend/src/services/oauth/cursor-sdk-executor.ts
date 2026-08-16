@@ -1,51 +1,144 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import type { SDKJsonValue } from '@cursor/sdk';
+import { create, fromBinary, fromJson, toBinary, toJson, type JsonValue } from '@bufbuild/protobuf';
+import { ValueSchema } from '@bufbuild/protobuf/wkt';
+import { createHash } from 'node:crypto';
+import http2 from 'node:http2';
+import {
+  AgentClientMessageSchema,
+  AgentConversationTurnStructureSchema,
+  AgentRunRequestSchema,
+  AgentServerMessageSchema,
+  AssistantMessageSchema,
+  BackgroundShellSpawnResultSchema,
+  ClientHeartbeatSchema,
+  ComputerUseErrorSchema,
+  ComputerUseResultSchema,
+  ConversationActionSchema,
+  ConversationStateStructureSchema,
+  ConversationStepSchema,
+  ConversationTurnStructureSchema,
+  DeleteRejectedSchema,
+  DeleteResultSchema,
+  DiagnosticsRejectedSchema,
+  DiagnosticsResultSchema,
+  ExecClientMessageSchema,
+  FetchErrorSchema,
+  FetchResultSchema,
+  GetBlobResultSchema,
+  GrepErrorSchema,
+  GrepResultSchema,
+  KvClientMessageSchema,
+  ListMcpResourcesExecResultSchema,
+  ListMcpResourcesRejectedSchema,
+  LsRejectedSchema,
+  LsResultSchema,
+  McpArgsSchema,
+  McpResultSchema,
+  McpSuccessSchema,
+  McpTextContentSchema,
+  McpToolCallSchema,
+  McpToolDefinitionSchema,
+  McpToolNotFoundSchema,
+  McpToolResultContentItemSchema,
+  McpToolResultSchema,
+  McpToolsSchema,
+  ReadMcpResourceExecResultSchema,
+  ReadMcpResourceRejectedSchema,
+  ReadRejectedSchema,
+  ReadResultSchema,
+  RecordScreenFailureSchema,
+  RecordScreenResultSchema,
+  RequestedModelSchema,
+  ResumeActionSchema,
+  RequestContextResultSchema,
+  RequestContextSchema,
+  RequestContextSuccessSchema,
+  SetBlobResultSchema,
+  ShellRejectedSchema,
+  ShellResultSchema,
+  ShellStreamSchema,
+  ToolCallSchema,
+  UserMessageActionSchema,
+  UserMessageSchema,
+  WriteRejectedSchema,
+  WriteResultSchema,
+  WriteShellStdinErrorSchema,
+  WriteShellStdinResultSchema,
+  type AgentServerMessage,
+  type ExecServerMessage,
+  type McpToolDefinition,
+} from './generated/cursor-agent_pb';
 
 const CURSOR_TRANSPORT = 'cursor-sdk://';
-const TOOL_WAIT_MS = 5 * 60 * 1000;
-const cursorModel = (id: string) => ({ id, params: [{ id: 'fast', value: 'false' }] });
+const CURSOR_API_URL = 'https://api2.cursor.sh';
+const CURSOR_RPC_PATH = '/agent.v1.AgentService/Run';
+const CURSOR_CLIENT_VERSION = 'cli-2026.05.01-eea359f';
+const CONNECT_END_STREAM_FLAG = 0b00000010;
+const HEARTBEAT_MS = 5_000;
+const MAX_FRAME_BYTES = 64 * 1024 * 1024;
+
+interface OpenAIToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
+interface OpenAIMessage {
+  role: string;
+  content?: unknown;
+  tool_call_id?: string;
+  tool_calls?: OpenAIToolCall[];
+}
+
+interface CursorToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
+type CursorRunEvent =
+  | { type: 'delta'; delta: Record<string, string> }
+  | { type: 'tool'; call: CursorToolCall }
+  | { type: 'terminal'; usage?: CursorUsage }
+  | { type: 'error'; error: unknown };
 
 interface CursorUsage {
   inputTokens: number;
   outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
   totalTokens: number;
-  reasoningTokens?: number;
 }
+
+interface PendingCursorTool {
+  resolve: (result: string) => void;
+  reject: (error: unknown) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface CursorRunSession {
+  apiKey: string;
+  model: string;
+  id: string;
+  created: number;
+  events: CursorRunEvent[];
+  cursor: number;
+  wake?: () => void;
+  pending: Map<string, PendingCursorTool>;
+  transport?: CursorTransport;
+  closed: boolean;
+  closeError?: unknown;
+}
+
+interface CursorTransport {
+  readonly alive: boolean;
+  write: (data: Uint8Array) => void;
+  close: () => void;
+}
+
+const cursorToolSessions = new Map<string, CursorRunSession>();
 
 function unsupported(message: string): Response {
   return Response.json(
-    {
-      error: {
-        message,
-        type: 'invalid_request_error',
-        code: 'cursor_unsupported',
-      },
-    },
+    { error: { message, type: 'invalid_request_error', code: 'cursor_unsupported' } },
     { status: 400 }
-  );
-}
-
-function sdkErrorResponse(error: unknown): Response | null {
-  if (!error || typeof error !== 'object') return null;
-  const { status, code, message } = error as {
-    status?: unknown;
-    code?: unknown;
-    message?: unknown;
-  };
-  if (typeof status !== 'number' || status < 400 || status > 599) return null;
-  return Response.json(
-    {
-      error: {
-        message: typeof message === 'string' ? message : 'Cursor SDK request failed',
-        type: 'cursor_sdk_error',
-        ...(typeof code === 'string' ? { code } : {}),
-      },
-    },
-    { status }
   );
 }
 
@@ -53,7 +146,6 @@ function contentText(content: unknown): string | null {
   if (typeof content === 'string') return content;
   if (content == null) return '';
   if (!Array.isArray(content)) return null;
-
   const parts: string[] = [];
   for (const part of content) {
     if (!part || typeof part !== 'object') return null;
@@ -66,162 +158,217 @@ function contentText(content: unknown): string | null {
   return parts.join('');
 }
 
-export function buildCursorPrompt(payload: any): string {
+/** Cursor supports system/user/assistant roots. Developer messages map to system. */
+export function normalizeCursorMessages(payload: any): OpenAIMessage[] {
   if (!Array.isArray(payload?.messages) || payload.messages.length === 0) {
-    throw new Error('Cursor Agent requires at least one chat message.');
+    throw new Error('Cursor requires at least one chat message.');
   }
-
-  const turns: Array<{ role: string; content: string }> = [];
-  for (const message of payload.messages) {
-    const text = contentText(message?.content);
-    if (text === null) {
-      throw new Error('Cursor Agent does not support image or non-text message content.');
+  return payload.messages.map((message: OpenAIMessage) => {
+    const content = contentText(message?.content);
+    if (content === null) {
+      throw new Error('Cursor does not support this non-text message content.');
     }
-    turns.push({
-      role: typeof message?.role === 'string' ? message.role : 'unknown',
-      content:
-        message?.tool_calls || message?.function_call || message?.tool_call_id
-          ? JSON.stringify({
-              content: text,
-              ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
-              ...(message.function_call ? { function_call: message.function_call } : {}),
-              ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
-            })
-          : text,
-    });
-  }
-
-  const hasTools =
-    payload?.tool_choice !== 'none' &&
-    payload?.function_call !== 'none' &&
-    ((Array.isArray(payload?.tools) && payload.tools.length > 0) ||
-      (Array.isArray(payload?.functions) && payload.functions.length > 0));
-
-  return [
-    'Follow the complete JSON-encoded conversation below. Role hierarchy is flattened into this user prompt and is not a security boundary.',
-    hasTools
-      ? 'Respond only to the final user request. Use only the declared client tools; do not access files, shell, web, or subagents.'
-      : 'Respond only to the final user request. Do not use tools or access files.',
-    JSON.stringify(turns),
-  ].join('\n');
-}
-
-function openAiUsage(usage: CursorUsage | undefined) {
-  if (!usage) return undefined;
-  return {
-    prompt_tokens: usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens,
-    completion_tokens: usage.outputTokens,
-    total_tokens: usage.totalTokens,
-    prompt_tokens_details: {
-      cached_tokens: usage.cacheReadTokens,
-      cache_read_tokens: usage.cacheReadTokens,
-      cache_write_tokens: usage.cacheWriteTokens,
-    },
-    ...(usage.reasoningTokens == null
-      ? {}
-      : {
-          completion_tokens_details: {
-            reasoning_tokens: usage.reasoningTokens,
-          },
-        }),
-  };
-}
-
-function sse(data: unknown): Uint8Array {
-  return new TextEncoder().encode(
-    `data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`
-  );
-}
-
-function abortPromise(signal: AbortSignal | undefined): Promise<never> | null {
-  if (!signal) return null;
-  return new Promise((_, reject) => {
-    const rejectAbort = () => reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
-    if (signal.aborted) rejectAbort();
-    else signal.addEventListener('abort', rejectAbort, { once: true });
+    return {
+      role: message.role === 'developer' ? 'system' : message.role,
+      content,
+      ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
+      ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
+    };
   });
 }
 
-async function disposeAgent(agent: any): Promise<void> {
-  if (!agent) return;
-  if (typeof agent[Symbol.asyncDispose] === 'function') {
-    await agent[Symbol.asyncDispose]();
-  } else {
-    await agent.close?.();
+function jsonRootMessage(message: OpenAIMessage): unknown {
+  const role = message.role === 'tool' ? 'user' : message.role;
+  return {
+    role,
+    content:
+      role === 'system'
+        ? (message.content as string)
+        : [{ type: 'text', text: message.content as string }],
+    ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
+    ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
+  };
+}
+
+function storeBlob(data: Uint8Array, blobs: Map<string, Uint8Array>): Uint8Array {
+  const id = new Uint8Array(createHash('sha256').update(data).digest());
+  blobs.set(Buffer.from(id).toString('hex'), data);
+  return id;
+}
+
+function toolResultText(messages: OpenAIMessage[], id: string): string | undefined {
+  const message = messages.find(
+    (candidate) => candidate.role === 'tool' && candidate.tool_call_id === id
+  );
+  return message ? (message.content as string) : undefined;
+}
+
+function parseToolArguments(raw: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed
+      : { value: parsed };
+  } catch {
+    return raw ? { __raw: raw } : {};
   }
 }
 
-interface CursorClientTool {
-  name: string;
-  description?: string;
-  inputSchema: Record<string, SDKJsonValue>;
+function mcpResult(content: string) {
+  return create(McpToolResultSchema, {
+    result: {
+      case: 'success',
+      value: create(McpSuccessSchema, {
+        content: [
+          create(McpToolResultContentItemSchema, {
+            content: {
+              case: 'text',
+              value: create(McpTextContentSchema, { text: content }),
+            },
+          }),
+        ],
+      }),
+    },
+  });
 }
 
-interface CursorToolCall {
-  id: string;
-  type: 'function';
-  function: { name: string; arguments: string };
+function historyTurns(messages: OpenAIMessage[], blobs: Map<string, Uint8Array>): Uint8Array[] {
+  const turns: Uint8Array[] = [];
+  let current: { user: Uint8Array; steps: Uint8Array[] } | undefined;
+  const flush = () => {
+    if (!current) return;
+    const turn = create(ConversationTurnStructureSchema, {
+      turn: {
+        case: 'agentConversationTurn',
+        value: create(AgentConversationTurnStructureSchema, {
+          userMessage: current.user,
+          steps: current.steps,
+          requestId: crypto.randomUUID(),
+        }),
+      },
+    });
+    turns.push(storeBlob(toBinary(ConversationTurnStructureSchema, turn), blobs));
+    current = undefined;
+  };
+
+  for (const message of messages) {
+    if (message.role === 'system' || message.role === 'developer') continue;
+    if (message.role === 'user') {
+      flush();
+      const id = crypto.randomUUID();
+      current = {
+        user: storeBlob(
+          toBinary(
+            UserMessageSchema,
+            create(UserMessageSchema, {
+              text: message.content as string,
+              messageId: id,
+            })
+          ),
+          blobs
+        ),
+        steps: [],
+      };
+      continue;
+    }
+    if (!current || message.role !== 'assistant') continue;
+    if (message.content) {
+      current.steps.push(
+        storeBlob(
+          toBinary(
+            ConversationStepSchema,
+            create(ConversationStepSchema, {
+              message: {
+                case: 'assistantMessage',
+                value: create(AssistantMessageSchema, { text: message.content as string }),
+              },
+            })
+          ),
+          blobs
+        )
+      );
+    }
+    for (const call of message.tool_calls ?? []) {
+      const result = toolResultText(messages, call.id);
+      const args = createMcpArgs(
+        call.function.name,
+        call.id,
+        parseToolArguments(call.function.arguments)
+      );
+      current.steps.push(
+        storeBlob(
+          toBinary(
+            ConversationStepSchema,
+            create(ConversationStepSchema, {
+              message: {
+                case: 'toolCall',
+                value: create(ToolCallSchema, {
+                  tool: {
+                    case: 'mcpToolCall',
+                    value: create(McpToolCallSchema, {
+                      args,
+                      ...(result == null ? {} : { result: mcpResult(result) }),
+                    }),
+                  },
+                }),
+              },
+            })
+          ),
+          blobs
+        )
+      );
+    }
+  }
+  flush();
+  return turns;
 }
 
-type CursorToolRunEvent =
-  | { type: 'delta'; delta: Record<string, string> }
-  | { type: 'tool'; call: CursorToolCall }
-  | { type: 'terminal'; result: any; usage?: CursorUsage }
-  | { type: 'error'; error: unknown };
-
-interface PendingCursorTool {
-  resolve: (result: string) => void;
-  reject: (error: unknown) => void;
-  timer: ReturnType<typeof setTimeout>;
+function createMcpArgs(name: string, id: string, args: Record<string, unknown>) {
+  return create(McpArgsSchema, {
+    name,
+    args: Object.fromEntries(
+      Object.entries(args).map(([key, value]) => [
+        key,
+        toBinary(ValueSchema, fromJson(ValueSchema, value as JsonValue)),
+      ])
+    ),
+    toolCallId: id,
+    providerIdentifier: 'client',
+    toolName: name,
+  });
 }
 
-interface CursorToolSession {
-  apiKey: string;
-  model: string;
-  id: string;
-  created: number;
-  workspace: string;
-  agent?: any;
-  run?: any;
-  events: CursorToolRunEvent[];
-  cursor: number;
-  wake?: () => void;
-  pending: Map<string, PendingCursorTool>;
-  cleaned: boolean;
-}
-
-const cursorToolSessions = new Map<string, CursorToolSession>();
-
-async function createCursorWorkspace(): Promise<string> {
-  return mkdtemp(join(tmpdir(), 'cursor-sdk-'));
-}
-
-function clientTools(payload: any): CursorClientTool[] {
+function clientTools(payload: any): McpToolDefinition[] {
   if (payload?.tool_choice === 'none' || payload?.function_call === 'none') return [];
-  const tools: CursorClientTool[] = [];
-  for (const tool of Array.isArray(payload?.tools) ? payload.tools : []) {
-    if (tool?.type !== 'function' || typeof tool?.function?.name !== 'string') continue;
-    tools.push({
-      name: tool.function.name,
-      description: tool.function.description,
-      inputSchema:
-        tool.function.parameters && typeof tool.function.parameters === 'object'
-          ? (tool.function.parameters as Record<string, SDKJsonValue>)
-          : { type: 'object', properties: {} },
-    });
-  }
-  for (const fn of Array.isArray(payload?.functions) ? payload.functions : []) {
-    if (typeof fn?.name !== 'string') continue;
-    tools.push({
-      name: fn.name,
-      description: fn.description,
-      inputSchema:
-        fn.parameters && typeof fn.parameters === 'object'
-          ? (fn.parameters as Record<string, SDKJsonValue>)
-          : { type: 'object', properties: {} },
-    });
-  }
-  return [...new Map(tools.map((tool) => [tool.name, tool])).values()];
+  const tools: any[] = [
+    ...(Array.isArray(payload?.tools) ? payload.tools : []),
+    ...(Array.isArray(payload?.functions)
+      ? payload.functions.map((fn: any) => ({ type: 'function', function: fn }))
+      : []),
+  ];
+  return [
+    ...new Map(
+      tools
+        .filter((tool) => tool?.type === 'function' && typeof tool?.function?.name === 'string')
+        .map((tool) => {
+          const fn = tool.function;
+          const schema =
+            fn.parameters && typeof fn.parameters === 'object'
+              ? fn.parameters
+              : { type: 'object', properties: {} };
+          return [
+            fn.name,
+            create(McpToolDefinitionSchema, {
+              name: fn.name,
+              description: fn.description || '',
+              inputSchema: fromJson(ValueSchema, schema as JsonValue),
+              providerIdentifier: 'client',
+              toolName: fn.name,
+            }),
+          ];
+        })
+    ).values(),
+  ];
 }
 
 function forcedToolChoice(payload: any): boolean {
@@ -233,140 +380,635 @@ function forcedToolChoice(payload: any): boolean {
   );
 }
 
-function pushToolEvent(session: CursorToolSession, event: CursorToolRunEvent): void {
+export function buildCursorRequest(payload: any): {
+  request: Uint8Array;
+  blobs: Map<string, Uint8Array>;
+  tools: McpToolDefinition[];
+} {
+  const messages = normalizeCursorMessages(payload);
+  const blobs = new Map<string, Uint8Array>();
+  const lastUser = messages.findLastIndex((message) => message.role === 'user');
+  if (lastUser < 0) throw new Error('Cursor requires a user message.');
+
+  const hasMessagesAfterUser = lastUser < messages.length - 1;
+  const history = hasMessagesAfterUser ? messages : messages.slice(0, lastUser);
+  const roots = history
+    .filter((message) => ['system', 'user', 'assistant', 'tool'].includes(message.role))
+    .map((message) =>
+      storeBlob(new TextEncoder().encode(JSON.stringify(jsonRootMessage(message))), blobs)
+    );
+  const turns = historyTurns(history, blobs);
+  const userText = messages[lastUser]!.content as string;
+  const id = crypto.randomUUID();
+  const tools = clientTools(payload);
+  const request = create(AgentClientMessageSchema, {
+    message: {
+      case: 'runRequest',
+      value: create(AgentRunRequestSchema, {
+        conversationState: create(ConversationStateStructureSchema, {
+          rootPromptMessagesJson: roots,
+          turns,
+        }),
+        action: create(ConversationActionSchema, {
+          action: hasMessagesAfterUser
+            ? { case: 'resumeAction', value: create(ResumeActionSchema, {}) }
+            : {
+                case: 'userMessageAction',
+                value: create(UserMessageActionSchema, {
+                  userMessage: create(UserMessageSchema, {
+                    text: userText,
+                    messageId: id,
+                  }),
+                }),
+              },
+        }),
+        requestedModel: create(RequestedModelSchema, { modelId: payload.model }),
+        mcpTools: create(McpToolsSchema, { mcpTools: tools }),
+        conversationId: crypto.randomUUID(),
+      }),
+    },
+  });
+  return { request: toBinary(AgentClientMessageSchema, request), blobs, tools };
+}
+
+function frame(data: Uint8Array): Buffer {
+  if (data.byteLength > MAX_FRAME_BYTES) throw new Error('Cursor request frame is too large.');
+  const result = Buffer.alloc(5 + data.byteLength);
+  result[0] = 0;
+  result.writeUInt32BE(data.byteLength, 1);
+  result.set(data, 5);
+  return result;
+}
+
+function pushEvent(session: CursorRunSession, event: CursorRunEvent): void {
   session.events.push(event);
   session.wake?.();
   session.wake = undefined;
 }
 
-async function nextToolEvent(
-  session: CursorToolSession,
-  signal?: AbortSignal
-): Promise<CursorToolRunEvent> {
+async function nextEvent(session: CursorRunSession, signal?: AbortSignal): Promise<CursorRunEvent> {
   while (session.cursor >= session.events.length) {
+    if (session.closed) throw session.closeError ?? new Error('Cursor run closed.');
     await new Promise<void>((resolve, reject) => {
-      const onAbort = () => reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+      const abort = () => {
+        session.wake = undefined;
+        reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+      };
       session.wake = () => {
-        signal?.removeEventListener('abort', onAbort);
+        signal?.removeEventListener('abort', abort);
         resolve();
       };
-      if (signal?.aborted) onAbort();
-      else signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) abort();
+      else signal?.addEventListener('abort', abort, { once: true });
     });
   }
   return session.events[session.cursor++]!;
 }
 
-async function cleanupToolSession(session: CursorToolSession): Promise<void> {
-  if (session.cleaned) return;
-  session.cleaned = true;
-  rejectPendingTools(session, new Error('Cursor tool run ended before receiving a result.'));
-  await disposeAgent(session.agent).catch(() => undefined);
-  await rm(session.workspace, { recursive: true, force: true });
-}
-
-function rejectPendingTools(session: CursorToolSession, error: unknown): void {
+function closeSession(session: CursorRunSession, error?: unknown): void {
+  if (session.closed) return;
+  session.closed = true;
+  session.closeError = error;
   for (const [id, pending] of session.pending) {
     clearTimeout(pending.timer);
     cursorToolSessions.delete(id);
-    pending.reject(error);
+    pending.reject(error ?? new Error('Cursor run ended before receiving a tool result.'));
   }
   session.pending.clear();
+  session.transport?.close();
+  session.wake?.();
+  session.wake = undefined;
 }
 
-async function cancelToolSession(session: CursorToolSession, error: unknown): Promise<void> {
-  pushToolEvent(session, { type: 'error', error });
-  rejectPendingTools(session, error);
-  await session.run?.cancel?.().catch(() => undefined);
-  await cleanupToolSession(session);
+function sendClientMessage(session: CursorRunSession, message: any): void {
+  session.transport?.write(toBinary(AgentClientMessageSchema, message));
 }
 
-function toolCallChunk(session: CursorToolSession, call: CursorToolCall) {
-  return {
-    id: session.id,
-    object: 'chat.completion.chunk',
-    created: session.created,
-    model: session.model,
-    choices: [
-      {
-        index: 0,
-        delta: { role: 'assistant', tool_calls: [{ index: 0, ...call }] },
-        finish_reason: null,
+function sendKvResponse(session: CursorRunSession, message: any): void {
+  const value = message.message.value;
+  const response = create(KvClientMessageSchema, {
+    id: message.id,
+    message:
+      message.message.case === 'getBlobArgs'
+        ? {
+            case: 'getBlobResult',
+            value: create(GetBlobResultSchema, {
+              blobData: sessionBlobs.get(session)?.get(Buffer.from(value.blobId).toString('hex')),
+            }),
+          }
+        : {
+            case: 'setBlobResult',
+            value: create(SetBlobResultSchema, {}),
+          },
+  });
+  if (message.message.case === 'setBlobArgs') {
+    sessionBlobs.get(session)?.set(Buffer.from(value.blobId).toString('hex'), value.blobData);
+  }
+  sendClientMessage(
+    session,
+    create(AgentClientMessageSchema, {
+      message: { case: 'kvClientMessage', value: response },
+    })
+  );
+}
+
+const sessionBlobs = new WeakMap<CursorRunSession, Map<string, Uint8Array>>();
+const sessionTools = new WeakMap<CursorRunSession, McpToolDefinition[]>();
+
+function sendExecResponse(
+  session: CursorRunSession,
+  message: ExecServerMessage,
+  response: any
+): void {
+  sendClientMessage(
+    session,
+    create(AgentClientMessageSchema, {
+      message: {
+        case: 'execClientMessage',
+        value: create(ExecClientMessageSchema, {
+          id: message.id,
+          execId: message.execId,
+          message: response,
+        }),
       },
-    ],
+    })
+  );
+}
+
+function rejectNativeTool(session: CursorRunSession, message: ExecServerMessage): boolean {
+  const reason = 'Tool unavailable';
+  const args: any = message.message.value;
+  const response = (() => {
+    switch (message.message.case) {
+      case 'shellArgs':
+        return {
+          case: 'shellResult',
+          value: create(ShellResultSchema, {
+            result: {
+              case: 'rejected',
+              value: create(ShellRejectedSchema, {
+                command: args.command,
+                workingDirectory: args.workingDirectory,
+                reason,
+              }),
+            },
+          }),
+        };
+      case 'shellStreamArgs':
+        return {
+          case: 'shellStream',
+          value: create(ShellStreamSchema, {
+            event: {
+              case: 'rejected',
+              value: create(ShellRejectedSchema, {
+                command: args.command,
+                workingDirectory: args.workingDirectory,
+                reason,
+              }),
+            },
+          }),
+        };
+      case 'writeArgs':
+        return rejectedPath(
+          'writeResult',
+          WriteResultSchema,
+          WriteRejectedSchema,
+          args.path,
+          reason
+        );
+      case 'deleteArgs':
+        return rejectedPath(
+          'deleteResult',
+          DeleteResultSchema,
+          DeleteRejectedSchema,
+          args.path,
+          reason
+        );
+      case 'readArgs':
+        return rejectedPath('readResult', ReadResultSchema, ReadRejectedSchema, args.path, reason);
+      case 'lsArgs':
+        return rejectedPath('lsResult', LsResultSchema, LsRejectedSchema, args.path, reason);
+      case 'diagnosticsArgs':
+        return rejectedPath(
+          'diagnosticsResult',
+          DiagnosticsResultSchema,
+          DiagnosticsRejectedSchema,
+          args.path,
+          reason
+        );
+      case 'grepArgs':
+        return {
+          case: 'grepResult',
+          value: create(GrepResultSchema, {
+            result: { case: 'error', value: create(GrepErrorSchema, { error: reason }) },
+          }),
+        };
+      case 'backgroundShellSpawnArgs':
+        return {
+          case: 'backgroundShellSpawnResult',
+          value: create(BackgroundShellSpawnResultSchema, {
+            result: {
+              case: 'rejected',
+              value: create(ShellRejectedSchema, {
+                command: args.command,
+                workingDirectory: args.workingDirectory,
+                reason,
+              }),
+            },
+          }),
+        };
+      case 'fetchArgs':
+        return {
+          case: 'fetchResult',
+          value: create(FetchResultSchema, {
+            result: {
+              case: 'error',
+              value: create(FetchErrorSchema, { url: args.url, error: reason }),
+            },
+          }),
+        };
+      case 'writeShellStdinArgs':
+        return {
+          case: 'writeShellStdinResult',
+          value: create(WriteShellStdinResultSchema, {
+            result: {
+              case: 'error',
+              value: create(WriteShellStdinErrorSchema, { error: reason }),
+            },
+          }),
+        };
+      case 'listMcpResourcesExecArgs':
+        return {
+          case: 'listMcpResourcesExecResult',
+          value: create(ListMcpResourcesExecResultSchema, {
+            result: {
+              case: 'rejected',
+              value: create(ListMcpResourcesRejectedSchema, { reason }),
+            },
+          }),
+        };
+      case 'readMcpResourceExecArgs':
+        return {
+          case: 'readMcpResourceExecResult',
+          value: create(ReadMcpResourceExecResultSchema, {
+            result: {
+              case: 'rejected',
+              value: create(ReadMcpResourceRejectedSchema, { uri: args.uri, reason }),
+            },
+          }),
+        };
+      case 'recordScreenArgs':
+        return {
+          case: 'recordScreenResult',
+          value: create(RecordScreenResultSchema, {
+            result: {
+              case: 'failure',
+              value: create(RecordScreenFailureSchema, { error: reason }),
+            },
+          }),
+        };
+      case 'computerUseArgs':
+        return {
+          case: 'computerUseResult',
+          value: create(ComputerUseResultSchema, {
+            result: {
+              case: 'error',
+              value: create(ComputerUseErrorSchema, {
+                error: reason,
+                actionCount: args.actions.length,
+              }),
+            },
+          }),
+        };
+      default:
+        return null;
+    }
+  })();
+  if (!response) return false;
+  sendExecResponse(session, message, response);
+  return true;
+}
+
+function rejectedPath(
+  responseCase: string,
+  resultSchema: any,
+  rejectedSchema: any,
+  path: string,
+  reason: string
+) {
+  return {
+    case: responseCase,
+    value: create(resultSchema, {
+      result: { case: 'rejected', value: create(rejectedSchema, { path, reason }) },
+    }),
   };
 }
 
-function finishChunk(session: CursorToolSession, reason: 'stop' | 'tool_calls') {
+function handleExec(session: CursorRunSession, message: ExecServerMessage): void {
+  if (message.message.case === 'requestContextArgs') {
+    const tools = sessionTools.get(session) ?? [];
+    sendExecResponse(session, message, {
+      case: 'requestContextResult',
+      value: create(RequestContextResultSchema, {
+        result: {
+          case: 'success',
+          value: create(RequestContextSuccessSchema, {
+            requestContext: create(RequestContextSchema, { tools }),
+          }),
+        },
+      }),
+    });
+    return;
+  }
+  if (message.message.case !== 'mcpArgs') {
+    if (!rejectNativeTool(session, message)) {
+      pushEvent(session, {
+        type: 'error',
+        error: new Error(`Unsupported Cursor exec request: ${message.message.case}`),
+      });
+    }
+    return;
+  }
+
+  const args = message.message.value;
+  const name = args.toolName || args.name;
+  const allowed = sessionTools.get(session)?.some((tool) => tool.name === name);
+  if (!allowed) {
+    sendExecResponse(session, message, {
+      case: 'mcpResult',
+      value: create(McpResultSchema, {
+        result: {
+          case: 'toolNotFound',
+          value: create(McpToolNotFoundSchema, {
+            name,
+            availableTools: (sessionTools.get(session) ?? []).map((tool) => tool.name),
+          }),
+        },
+      }),
+    });
+    return;
+  }
+
+  const id = args.toolCallId || `call_${crypto.randomUUID()}`;
+  const decodedArgs = Object.fromEntries(
+    Object.entries(args.args).map(([key, value]) => {
+      try {
+        return [key, toJson(ValueSchema, fromBinary(ValueSchema, value))];
+      } catch {
+        return [key, new TextDecoder().decode(value)];
+      }
+    })
+  );
+  const timer = setTimeout(
+    () => {
+      closeSession(session, new Error(`Cursor tool continuation '${id}' timed out.`));
+    },
+    5 * 60 * 1000
+  );
+  timer.unref?.();
+  session.pending.set(id, {
+    timer,
+    resolve: (result) => {
+      sendExecResponse(session, message, {
+        case: 'mcpResult',
+        value: create(McpResultSchema, {
+          result: {
+            case: 'success',
+            value: create(McpSuccessSchema, {
+              content: [
+                create(McpToolResultContentItemSchema, {
+                  content: {
+                    case: 'text',
+                    value: create(McpTextContentSchema, { text: result }),
+                  },
+                }),
+              ],
+            }),
+          },
+        }),
+      });
+    },
+    reject: () => undefined,
+  });
+  cursorToolSessions.set(id, session);
+  pushEvent(session, {
+    type: 'tool',
+    call: {
+      id,
+      type: 'function',
+      function: { name, arguments: JSON.stringify(decodedArgs) },
+    },
+  });
+}
+
+function processServerMessage(session: CursorRunSession, message: AgentServerMessage): void {
+  switch (message.message.case) {
+    case 'interactionUpdate': {
+      const update = message.message.value.message;
+      if (update.case === 'textDelta' && update.value.text) {
+        pushEvent(session, { type: 'delta', delta: { content: update.value.text } });
+      } else if (update.case === 'thinkingDelta' && update.value.text) {
+        pushEvent(session, {
+          type: 'delta',
+          delta: { reasoning_content: update.value.text },
+        });
+      } else if (update.case === 'tokenDelta') {
+        sessionUsage.get(session)!.outputTokens += update.value.tokens;
+      }
+      break;
+    }
+    case 'conversationCheckpointUpdate': {
+      const used = message.message.value.tokenDetails?.usedTokens;
+      if (used != null) sessionUsage.get(session)!.totalTokens = used;
+      break;
+    }
+    case 'kvServerMessage':
+      sendKvResponse(session, message.message.value);
+      break;
+    case 'execServerMessage':
+      handleExec(session, message.message.value);
+      break;
+    case 'interactionQuery':
+      pushEvent(session, {
+        type: 'error',
+        error: new Error('Cursor requested an unsupported built-in interaction.'),
+      });
+      break;
+  }
+}
+
+const sessionUsage = new WeakMap<CursorRunSession, CursorUsage>();
+
+function openTransport(
+  session: CursorRunSession,
+  accessToken: string,
+  firstMessage: Uint8Array
+): CursorTransport {
+  const client = http2.connect(CURSOR_API_URL);
+  const request = client.request({
+    ':method': 'POST',
+    ':path': CURSOR_RPC_PATH,
+    'content-type': 'application/connect+proto',
+    'connect-protocol-version': '1',
+    te: 'trailers',
+    authorization: `Bearer ${accessToken}`,
+    'x-ghost-mode': 'true',
+    'x-cursor-client-version': CURSOR_CLIENT_VERSION,
+    'x-cursor-client-type': 'cli',
+    'x-request-id': crypto.randomUUID(),
+  });
+  let pending = Buffer.alloc(0);
+  let ended = false;
+  let disposed = false;
+  const heartbeat = setInterval(() => {
+    write(
+      toBinary(
+        AgentClientMessageSchema,
+        create(AgentClientMessageSchema, {
+          message: {
+            case: 'clientHeartbeat',
+            value: create(ClientHeartbeatSchema, {}),
+          },
+        })
+      )
+    );
+  }, HEARTBEAT_MS);
+  heartbeat.unref?.();
+
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    ended = true;
+    clearInterval(heartbeat);
+    request.close();
+    client.close();
+  };
+
+  const finish = (error?: unknown) => {
+    if (ended) return;
+    ended = true;
+    clearInterval(heartbeat);
+    if (error) pushEvent(session, { type: 'error', error });
+    else pushEvent(session, { type: 'terminal', usage: sessionUsage.get(session) });
+    dispose();
+  };
+  request.on('response', (headers) => {
+    const status = Number(headers[':status'] || 0);
+    if (status < 200 || status >= 300) finish(new Error(`Cursor HTTP ${status}`));
+  });
+  request.on('data', (chunk: Buffer) => {
+    pending = Buffer.concat([pending, chunk]);
+    while (pending.length >= 5) {
+      const flags = pending[0]!;
+      const length = pending.readUInt32BE(1);
+      if (length > MAX_FRAME_BYTES) {
+        finish(new Error('Cursor response frame is too large.'));
+        return;
+      }
+      if (pending.length < 5 + length) return;
+      const body = pending.subarray(5, 5 + length);
+      pending = pending.subarray(5 + length);
+      if (flags & CONNECT_END_STREAM_FLAG) {
+        try {
+          const envelope = JSON.parse(body.toString());
+          if (envelope.error) {
+            finish(new Error(envelope.error.message || 'Cursor request failed.'));
+          }
+        } catch {
+          finish(new Error('Cursor returned an invalid end-stream frame.'));
+        }
+        continue;
+      }
+      try {
+        processServerMessage(session, fromBinary(AgentServerMessageSchema, body));
+      } catch (error) {
+        finish(error);
+      }
+    }
+  });
+  request.on('end', () => finish());
+  request.on('error', finish);
+  client.on('error', finish);
+
+  function write(data: Uint8Array) {
+    if (!ended) request.write(frame(data));
+  }
+  write(firstMessage);
+  return {
+    get alive() {
+      return !ended;
+    },
+    write,
+    close: dispose,
+  };
+}
+
+function sse(data: unknown): Uint8Array {
+  return new TextEncoder().encode(
+    `data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`
+  );
+}
+
+function chunk(session: CursorRunSession, delta: object, finishReason: string | null) {
   return {
     id: session.id,
     object: 'chat.completion.chunk',
     created: session.created,
     model: session.model,
-    choices: [{ index: 0, delta: {}, finish_reason: reason }],
+    choices: [{ index: 0, delta, finish_reason: finishReason }],
   };
 }
 
-function renderToolStream(session: CursorToolSession, signal?: AbortSignal): Response {
-  let emittedDelta = false;
-  const onAbort = () =>
-    void cancelToolSession(session, signal?.reason ?? new DOMException('Aborted', 'AbortError'));
-  signal?.addEventListener('abort', onAbort, { once: true });
+function drainToolCalls(session: CursorRunSession, first: CursorToolCall): CursorToolCall[] {
+  const calls = [first];
+  while (session.events[session.cursor]?.type === 'tool') {
+    calls.push(
+      (session.events[session.cursor++] as Extract<CursorRunEvent, { type: 'tool' }>).call
+    );
+  }
+  return calls;
+}
+
+function renderStream(session: CursorRunSession, signal?: AbortSignal): Response {
+  let emitted = false;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       void (async () => {
         try {
           while (true) {
-            const event = await nextToolEvent(session, signal);
+            const event = await nextEvent(session, signal);
             if (event.type === 'delta') {
               controller.enqueue(
-                sse({
-                  id: session.id,
-                  object: 'chat.completion.chunk',
-                  created: session.created,
-                  model: session.model,
-                  choices: [
-                    {
-                      index: 0,
-                      delta: {
-                        ...(!emittedDelta ? { role: 'assistant' } : {}),
-                        ...event.delta,
-                      },
-                      finish_reason: null,
-                    },
-                  ],
-                })
+                sse(
+                  chunk(
+                    session,
+                    { ...(!emitted ? { role: 'assistant' } : {}), ...event.delta },
+                    null
+                  )
+                )
               );
-              emittedDelta = true;
+              emitted = true;
             } else if (event.type === 'tool') {
-              controller.enqueue(sse(toolCallChunk(session, event.call)));
-              controller.enqueue(sse(finishChunk(session, 'tool_calls')));
+              const calls = drainToolCalls(session, event.call);
+              controller.enqueue(
+                sse(
+                  chunk(
+                    session,
+                    {
+                      ...(!emitted ? { role: 'assistant' } : {}),
+                      tool_calls: calls.map((call, index) => ({ index, ...call })),
+                    },
+                    null
+                  )
+                )
+              );
+              controller.enqueue(sse(chunk(session, {}, 'tool_calls')));
               controller.enqueue(sse('[DONE]'));
               controller.close();
               return;
             } else if (event.type === 'terminal') {
-              if (!emittedDelta && event.result?.result) {
-                controller.enqueue(
-                  sse({
-                    id: session.id,
-                    object: 'chat.completion.chunk',
-                    created: session.created,
-                    model: session.model,
-                    choices: [
-                      {
-                        index: 0,
-                        delta: {
-                          role: 'assistant',
-                          content: event.result.result,
-                        },
-                        finish_reason: null,
-                      },
-                    ],
-                  })
-                );
-              }
-              controller.enqueue(sse(finishChunk(session, 'stop')));
-              if (event.usage || event.result?.usage) {
+              controller.enqueue(sse(chunk(session, {}, 'stop')));
+              if (event.usage) {
                 controller.enqueue(
                   sse({
                     id: session.id,
@@ -374,50 +1016,44 @@ function renderToolStream(session: CursorToolSession, signal?: AbortSignal): Res
                     created: session.created,
                     model: session.model,
                     choices: [],
-                    usage: openAiUsage(event.usage || event.result.usage),
+                    usage: openAiUsage(event.usage),
                   })
                 );
               }
               controller.enqueue(sse('[DONE]'));
               controller.close();
+              closeSession(session);
               return;
             } else {
               throw event.error;
             }
           }
         } catch (error) {
+          closeSession(session, error);
           controller.error(error);
-        } finally {
-          signal?.removeEventListener('abort', onAbort);
         }
       })();
     },
-    async cancel(reason) {
-      signal?.removeEventListener('abort', onAbort);
-      await cancelToolSession(session, reason ?? new DOMException('Cancelled', 'AbortError'));
+    cancel(reason) {
+      closeSession(session, reason);
     },
   });
   return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-    },
+    headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
   });
 }
 
-async function renderToolJson(session: CursorToolSession, signal?: AbortSignal): Promise<Response> {
+async function renderJson(session: CursorRunSession, signal?: AbortSignal): Promise<Response> {
   let content = '';
   let reasoning = '';
-  const onAbort = () =>
-    void cancelToolSession(session, signal?.reason ?? new DOMException('Aborted', 'AbortError'));
-  signal?.addEventListener('abort', onAbort, { once: true });
   try {
     while (true) {
-      const event = await nextToolEvent(session, signal);
+      const event = await nextEvent(session, signal);
       if (event.type === 'delta') {
         content += event.delta.content ?? '';
         reasoning += event.delta.reasoning_content ?? '';
       } else if (event.type === 'tool') {
+        const calls = drainToolCalls(session, event.call);
         return Response.json({
           id: session.id,
           object: 'chat.completion',
@@ -430,13 +1066,14 @@ async function renderToolJson(session: CursorToolSession, signal?: AbortSignal):
                 role: 'assistant',
                 content: content || null,
                 reasoning_content: reasoning || null,
-                tool_calls: [event.call],
+                tool_calls: calls,
               },
               finish_reason: 'tool_calls',
             },
           ],
         });
       } else if (event.type === 'terminal') {
+        closeSession(session);
         return Response.json({
           id: session.id,
           object: 'chat.completion',
@@ -447,196 +1084,66 @@ async function renderToolJson(session: CursorToolSession, signal?: AbortSignal):
               index: 0,
               message: {
                 role: 'assistant',
-                content: content || event.result?.result || '',
+                content,
                 reasoning_content: reasoning || null,
               },
               finish_reason: 'stop',
             },
           ],
-          usage: openAiUsage(event.usage || event.result?.usage),
+          usage: event.usage ? openAiUsage(event.usage) : undefined,
         });
       } else {
         throw event.error;
       }
     }
-  } finally {
-    signal?.removeEventListener('abort', onAbort);
+  } catch (error) {
+    closeSession(session, error);
+    throw error;
   }
 }
 
-function renderToolSegment(
-  session: CursorToolSession,
-  stream: boolean,
-  signal?: AbortSignal
-): Response | Promise<Response> {
-  return stream ? renderToolStream(session, signal) : renderToolJson(session, signal);
+function openAiUsage(usage: CursorUsage) {
+  return {
+    prompt_tokens: Math.max(0, usage.totalTokens - usage.outputTokens),
+    completion_tokens: usage.outputTokens,
+    total_tokens: usage.totalTokens,
+  };
 }
 
-function trailingToolResults(payload: any): Array<{ id: string; content: string }> {
-  if (!Array.isArray(payload?.messages)) return [];
-  const results: Array<{ id: string; content: string }> = [];
-  for (let index = payload.messages.length - 1; index >= 0; index -= 1) {
-    const message = payload.messages[index];
-    if (message?.role !== 'tool') break;
-    if (typeof message.tool_call_id !== 'string') continue;
-    const text = contentText(message.content);
-    results.push({
-      id: message.tool_call_id,
-      content: text === null ? JSON.stringify(message.content) : text,
-    });
-  }
-  return results.reverse();
-}
-
-async function resumeCursorToolRequest(
+async function resumeCursorRequest(
   apiKey: string,
   payload: any,
-  results: Array<{ id: string; content: string }>,
   signal?: AbortSignal
-): Promise<Response> {
-  const sessions = new Set(
-    results.map((result) => cursorToolSessions.get(result.id)).filter(Boolean)
+): Promise<Response | null> {
+  const trailing = (payload.messages as OpenAIMessage[]).filter(
+    (message) => message.role === 'tool' && typeof message.tool_call_id === 'string'
   );
+  if (trailing.length === 0) return null;
+  const sessions = new Set(
+    trailing.map((message) => cursorToolSessions.get(message.tool_call_id!))
+  );
+  sessions.delete(undefined);
+  if (sessions.size === 0) return null;
   if (sessions.size !== 1) {
-    return unsupported(
-      'Cursor tool continuation is missing or expired. Retry the user request to start a new run.'
-    );
+    return unsupported('Cursor tool continuation is missing or expired. Retry the user request.');
   }
   const session = [...sessions][0]!;
+  if (!session.transport?.alive || session.closed) {
+    closeSession(session, new Error('Cursor tool bridge closed.'));
+    return null;
+  }
   if (session.apiKey !== apiKey || session.model !== payload.model) {
     return unsupported('Cursor tool continuation does not match this account or model.');
   }
-  for (const result of results) {
-    const pending = session.pending.get(result.id);
-    if (!pending) {
-      return unsupported(`Cursor tool continuation '${result.id}' is missing or expired.`);
-    }
+  for (const message of trailing) {
+    const pending = session.pending.get(message.tool_call_id!);
+    if (!pending) continue;
     clearTimeout(pending.timer);
-    session.pending.delete(result.id);
-    cursorToolSessions.delete(result.id);
-    pending.resolve(result.content);
+    session.pending.delete(message.tool_call_id!);
+    cursorToolSessions.delete(message.tool_call_id!);
+    pending.resolve(contentText(message.content) ?? JSON.stringify(message.content));
   }
-  return renderToolSegment(session, payload.stream === true, signal);
-}
-
-async function startCursorToolRequest(
-  apiKey: string,
-  payload: any,
-  prompt: string,
-  tools: CursorClientTool[],
-  signal?: AbortSignal
-): Promise<Response> {
-  const { Agent, JsonlLocalAgentStore } = await import('@cursor/sdk');
-  const workspace = await createCursorWorkspace();
-  const store = new JsonlLocalAgentStore(join(workspace, 'store'));
-  const session: CursorToolSession = {
-    apiKey,
-    model: payload.model,
-    id: `chatcmpl_${crypto.randomUUID()}`,
-    created: Math.floor(Date.now() / 1000),
-    workspace,
-    events: [],
-    cursor: 0,
-    pending: new Map(),
-    cleaned: false,
-  };
-
-  const customTools = Object.fromEntries(
-    tools.map((tool) => [
-      tool.name,
-      {
-        description: tool.description,
-        inputSchema: tool.inputSchema,
-        execute: (args: Record<string, SDKJsonValue>, context: { toolCallId?: string }) =>
-          new Promise<string>((resolve, reject) => {
-            let id = context.toolCallId || `call_${crypto.randomUUID()}`;
-            if (session.pending.has(id) || cursorToolSessions.has(id)) {
-              id = `call_${crypto.randomUUID()}`;
-            }
-            const timer = setTimeout(() => {
-              void cancelToolSession(
-                session,
-                new Error(`Cursor tool continuation '${id}' timed out.`)
-              );
-            }, TOOL_WAIT_MS);
-            timer.unref?.();
-            session.pending.set(id, { resolve, reject, timer });
-            cursorToolSessions.set(id, session);
-            pushToolEvent(session, {
-              type: 'tool',
-              call: {
-                id,
-                type: 'function',
-                function: { name: tool.name, arguments: JSON.stringify(args) },
-              },
-            });
-          }),
-      },
-    ])
-  );
-
-  const createPromise = Agent.create({
-    apiKey,
-    model: cursorModel(payload.model),
-    tools: ['mcp'],
-    local: { cwd: workspace, settingSources: [], store, customTools },
-  });
-  const abort = abortPromise(signal);
-  try {
-    session.agent = await (abort ? Promise.race([createPromise, abort]) : createPromise);
-  } catch (error) {
-    if (signal?.aborted) {
-      session.cleaned = true;
-      void createPromise
-        .then(disposeAgent, () => undefined)
-        .finally(() => rm(workspace, { recursive: true, force: true }));
-      throw error;
-    }
-    await cleanupToolSession(session);
-    return sdkErrorResponse(error) ?? Promise.reject(error);
-  }
-
-  void (async () => {
-    try {
-      const run = await session.agent.send(prompt, {
-        onDelta: ({ update }: any) => {
-          if (update.type === 'text-delta' && update.text) {
-            pushToolEvent(session, {
-              type: 'delta',
-              delta: { content: update.text },
-            });
-          } else if (update.type === 'thinking-delta' && update.text) {
-            pushToolEvent(session, {
-              type: 'delta',
-              delta: { reasoning_content: update.text },
-            });
-          }
-        },
-      });
-      session.run = run;
-      if (session.cleaned) {
-        await run.cancel?.().catch(() => undefined);
-        return;
-      }
-      let usage: CursorUsage | undefined;
-      for await (const event of run.stream()) {
-        if (event.type === 'usage') usage = event.usage;
-      }
-      const result = await run.wait();
-      if (result.status !== 'finished') {
-        throw new Error(result.error?.message || `Cursor Agent run ${result.status}`);
-      }
-      pushToolEvent(session, { type: 'terminal', result, usage });
-      await cleanupToolSession(session);
-    } catch (error) {
-      if (!session.cleaned) {
-        pushToolEvent(session, { type: 'error', error });
-        await cleanupToolSession(session);
-      }
-    }
-  })();
-
-  return renderToolSegment(session, payload.stream === true, signal);
+  return payload.stream === true ? renderStream(session, signal) : renderJson(session, signal);
 }
 
 export async function executeCursorSdkRequest(
@@ -646,252 +1153,36 @@ export async function executeCursorSdkRequest(
   signal?: AbortSignal
 ): Promise<Response | null> {
   if (!url.startsWith(CURSOR_TRANSPORT)) return null;
-
   if (forcedToolChoice(payload)) {
-    return unsupported(
-      'Cursor Agent cannot guarantee forced tool choice. Use tool_choice auto or none.'
-    );
+    return unsupported('Cursor cannot guarantee forced tool choice. Use tool_choice auto or none.');
   }
-
-  let prompt: string;
-  try {
-    prompt = buildCursorPrompt(payload);
-  } catch (error) {
-    return unsupported(error instanceof Error ? error.message : String(error));
-  }
-
   const apiKey = headers.Authorization?.replace(/^Bearer\s+/i, '');
   if (!apiKey) return new Response('Cursor OAuth API key is missing.', { status: 401 });
 
-  const results = trailingToolResults(payload);
-  if (results.length > 0) {
-    return resumeCursorToolRequest(apiKey, payload, results, signal);
-  }
-  const tools = clientTools(payload);
-  if (tools.length > 0) {
-    return startCursorToolRequest(apiKey, payload, prompt, tools, signal);
-  }
+  const resumed = await resumeCursorRequest(apiKey, payload, signal);
+  if (resumed) return resumed;
 
-  const { Agent, JsonlLocalAgentStore } = await import('@cursor/sdk');
-  const workspace = await createCursorWorkspace();
-  const store = new JsonlLocalAgentStore(join(workspace, 'store'));
-  let agent: any;
-  let run: any;
-  let cleaned = false;
-  const cleanup = async () => {
-    if (cleaned) return;
-    cleaned = true;
-    await disposeAgent(agent).catch(() => undefined);
-    await rm(workspace, { recursive: true, force: true });
-  };
-  const cancel = async () => {
-    await run?.cancel?.().catch(() => undefined);
-    await cleanup();
-  };
-  const onAbort = () => void cancel();
-  signal?.addEventListener('abort', onAbort, { once: true });
-
+  let built;
   try {
-    const createPromise = Agent.create({
-      apiKey,
-      model: cursorModel(payload.model),
-      tools: [],
-      local: { cwd: workspace, settingSources: [], store },
-    });
-    const abort = abortPromise(signal);
-    try {
-      agent = await (abort ? Promise.race([createPromise, abort]) : createPromise);
-    } catch (error) {
-      if (signal?.aborted) {
-        void createPromise
-          .then(disposeAgent, () => undefined)
-          .finally(() => rm(workspace, { recursive: true, force: true }));
-        throw error;
-      }
-      return sdkErrorResponse(error) ?? Promise.reject(error);
-    }
-
-    const id = `chatcmpl_${crypto.randomUUID()}`;
-    const created = Math.floor(Date.now() / 1000);
-    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
-    const pendingDeltas: Uint8Array[] = [];
-    let emittedDelta = false;
-    let acceptingDeltas = true;
-    const emitDelta = (delta: Record<string, string>) => {
-      if (!acceptingDeltas) return;
-      const firstDelta = !emittedDelta;
-      emittedDelta = true;
-      const chunk = sse({
-        id,
-        object: 'chat.completion.chunk',
-        created,
-        model: payload.model,
-        choices: [
-          {
-            index: 0,
-            delta: { ...(firstDelta ? { role: 'assistant' } : {}), ...delta },
-            finish_reason: null,
-          },
-        ],
-      });
-      if (streamController) streamController.enqueue(chunk);
-      else pendingDeltas.push(chunk);
-    };
-    const sendPromise = agent.send(prompt, {
-      ...(payload.stream === true
-        ? {
-            onDelta: ({ update }: any) => {
-              if (update.type === 'text-delta' && update.text) emitDelta({ content: update.text });
-              if (update.type === 'thinking-delta' && update.text) {
-                emitDelta({ reasoning_content: update.text });
-              }
-            },
-          }
-        : {}),
-    });
-    try {
-      run = await (abort ? Promise.race([sendPromise, abort]) : sendPromise);
-    } catch (error) {
-      if (signal?.aborted) {
-        void sendPromise
-          .then(
-            (lateRun: any) => lateRun.cancel?.(),
-            () => undefined
-          )
-          .finally(cleanup);
-        throw error;
-      }
-      return sdkErrorResponse(error) ?? Promise.reject(error);
-    }
-
-    if (payload.stream !== true) {
-      let content = '';
-      let reasoning = '';
-      let usage: CursorUsage | undefined;
-      for await (const event of run.stream()) {
-        if (event.type === 'assistant') {
-          content += event.message.content
-            .filter((part: any) => part.type === 'text')
-            .map((part: any) => part.text)
-            .join('');
-        } else if (event.type === 'thinking') reasoning += event.text;
-        else if (event.type === 'usage') usage = event.usage;
-      }
-      const result = await run.wait();
-      if (result.status !== 'finished') {
-        throw new Error(result.error?.message || `Cursor Agent run ${result.status}`);
-      }
-      return Response.json({
-        id,
-        object: 'chat.completion',
-        created,
-        model: payload.model,
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: 'assistant',
-              content: content || result.result || '',
-              reasoning_content: reasoning || null,
-            },
-            finish_reason: 'stop',
-          },
-        ],
-        usage: openAiUsage(usage || result.usage),
-      });
-    }
-
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        streamController = controller;
-        for (const delta of pendingDeltas) controller.enqueue(delta);
-        pendingDeltas.length = 0;
-        void (async () => {
-          try {
-            let usage: CursorUsage | undefined;
-            for await (const event of run.stream()) {
-              if (event.type === 'usage') usage = event.usage;
-            }
-            const result = await run.wait();
-            if (result.status !== 'finished') {
-              throw new Error(result.error?.message || `Cursor Agent run ${result.status}`);
-            }
-            if (!emittedDelta) {
-              controller.enqueue(
-                sse({
-                  id,
-                  object: 'chat.completion.chunk',
-                  created,
-                  model: payload.model,
-                  choices: [
-                    {
-                      index: 0,
-                      delta: {
-                        role: 'assistant',
-                        ...(result.result ? { content: result.result } : {}),
-                      },
-                      finish_reason: null,
-                    },
-                  ],
-                })
-              );
-            }
-            controller.enqueue(
-              sse({
-                id,
-                object: 'chat.completion.chunk',
-                created,
-                model: payload.model,
-                choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-              })
-            );
-            if (usage || result.usage) {
-              controller.enqueue(
-                sse({
-                  id,
-                  object: 'chat.completion.chunk',
-                  created,
-                  model: payload.model,
-                  choices: [],
-                  usage: openAiUsage(usage || result.usage),
-                })
-              );
-            }
-            controller.enqueue(sse('[DONE]'));
-            controller.close();
-          } catch (error) {
-            controller.error(error);
-          } finally {
-            acceptingDeltas = false;
-            streamController = undefined;
-            signal?.removeEventListener('abort', onAbort);
-            await cleanup();
-          }
-        })();
-      },
-      async cancel() {
-        acceptingDeltas = false;
-        streamController = undefined;
-        signal?.removeEventListener('abort', onAbort);
-        await cancel();
-      },
-    });
-
-    return new Response(stream, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-      },
-    });
+    built = buildCursorRequest(payload);
   } catch (error) {
-    await cancel();
-    throw error;
-  } finally {
-    if (payload.stream !== true || !run) {
-      signal?.removeEventListener('abort', onAbort);
-      await cleanup();
-    }
+    return unsupported(error instanceof Error ? error.message : String(error));
   }
+  const session: CursorRunSession = {
+    apiKey,
+    model: payload.model,
+    id: `chatcmpl_${crypto.randomUUID()}`,
+    created: Math.floor(Date.now() / 1000),
+    events: [],
+    cursor: 0,
+    pending: new Map(),
+    closed: false,
+  };
+  sessionBlobs.set(session, built.blobs);
+  sessionTools.set(session, built.tools);
+  sessionUsage.set(session, { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+  session.transport = openTransport(session, apiKey, built.request);
+  return payload.stream === true ? renderStream(session, signal) : renderJson(session, signal);
 }
 
 export const CURSOR_SDK_TRANSPORT_URL = `${CURSOR_TRANSPORT}agent`;

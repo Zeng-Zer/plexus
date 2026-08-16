@@ -1,44 +1,26 @@
-import { access } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { create, fromBinary, toBinary, toJson } from '@bufbuild/protobuf';
+import { ValueSchema } from '@bufbuild/protobuf/wkt';
+import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  AgentClientMessageSchema,
+  AgentServerMessageSchema,
+  ConversationStepSchema,
+  ConversationTurnStructureSchema,
+  InteractionUpdateSchema,
+  TextDeltaUpdateSchema,
+  UserMessageSchema,
+} from '../generated/cursor-agent_pb';
+import {
+  buildCursorRequest,
   CURSOR_SDK_TRANSPORT_URL,
-  buildCursorPrompt,
   executeCursorSdkRequest,
+  normalizeCursorMessages,
 } from '../cursor-sdk-executor';
 
-const sdk = vi.hoisted(() => ({
-  create: vi.fn(),
-  storeRoots: [] as string[],
-}));
+const transport = vi.hoisted(() => ({ connect: vi.fn() }));
 
-vi.mock('@cursor/sdk', () => ({
-  Agent: { create: sdk.create },
-  JsonlLocalAgentStore: class {
-    constructor(root: string) {
-      sdk.storeRoots.push(root);
-    }
-  },
-}));
-
-function mockAgent(events: any[], result: any = { status: 'finished' }) {
-  const run = {
-    id: 'run-1',
-    async *stream() {
-      for (const event of events) yield event;
-    },
-    wait: vi.fn(async () => result),
-    cancel: vi.fn(async () => undefined),
-  };
-  const agent = {
-    send: vi.fn(async () => run),
-    close: vi.fn(),
-    [Symbol.asyncDispose]: vi.fn(async () => undefined),
-  };
-  sdk.create.mockResolvedValue(agent);
-  return { agent, run };
-}
+vi.mock('node:http2', () => ({ default: { connect: transport.connect } }));
 
 const payload = {
   model: 'cursor-model',
@@ -49,450 +31,242 @@ const payload = {
   ],
 };
 
-const exists = (path: string) =>
-  access(path).then(
-    () => true,
-    () => false
-  );
-
-async function waitUntil(check: () => boolean): Promise<void> {
-  await vi.waitFor(() => expect(check()).toBe(true));
+function decodeRun(request: Uint8Array) {
+  const client = fromBinary(AgentClientMessageSchema, request);
+  if (client.message.case !== 'runRequest') throw new Error('Expected a run request');
+  return client.message.value;
 }
 
-describe('Cursor SDK executor', () => {
-  beforeEach(() => {
-    sdk.create.mockReset();
-    sdk.storeRoots.length = 0;
-    process.env.DATA_DIR = '/tmp';
-  });
+describe('Cursor protocol executor', () => {
+  beforeEach(() => transport.connect.mockReset());
 
-  it('serializes text history while documenting flattened role hierarchy', () => {
-    const prompt = buildCursorPrompt(payload);
-    expect(prompt).toContain('Role hierarchy is flattened');
-    expect(prompt).toContain(
-      JSON.stringify([
-        { role: 'system', content: 'Be concise.' },
-        { role: 'developer', content: 'Use plain text.' },
-        { role: 'user', content: 'Hello' },
-      ])
-    );
-  });
-
-  it('synthesizes unary output, maps cache usage, and removes isolated store/workspace', async () => {
-    const { agent } = mockAgent([
-      { type: 'thinking', text: 'reasoning' },
-      {
-        type: 'assistant',
-        message: { content: [{ type: 'text', text: 'answer' }] },
-      },
-      {
-        type: 'usage',
-        usage: {
-          inputTokens: 3,
-          outputTokens: 2,
-          totalTokens: 10,
-          cacheReadTokens: 4,
-          cacheWriteTokens: 1,
-        },
-      },
+  it('maps developer messages to system without injecting text', () => {
+    expect(normalizeCursorMessages(payload)).toEqual([
+      { role: 'system', content: 'Be concise.' },
+      { role: 'system', content: 'Use plain text.' },
+      { role: 'user', content: 'Hello' },
     ]);
 
-    const response = await executeCursorSdkRequest(
-      CURSOR_SDK_TRANSPORT_URL,
-      { Authorization: 'Bearer key' },
-      payload
+    const built = buildCursorRequest(payload);
+    const run = decodeRun(built.request);
+    const roots = run.conversationState!.rootPromptMessagesJson.map((id) =>
+      JSON.parse(new TextDecoder().decode(built.blobs.get(Buffer.from(id).toString('hex'))))
     );
-    const body = await response!.json();
 
-    expect(body.choices[0].message).toMatchObject({
-      content: 'answer',
-      reasoning_content: 'reasoning',
+    expect(roots).toEqual([
+      { role: 'system', content: 'Be concise.' },
+      { role: 'system', content: 'Use plain text.' },
+    ]);
+    expect(JSON.stringify(roots)).not.toContain('Respond only');
+    expect(run.action!.action).toMatchObject({
+      case: 'userMessageAction',
+      value: { userMessage: { text: 'Hello' } },
     });
-    expect(body.usage).toMatchObject({
-      prompt_tokens: 8,
-      completion_tokens: 2,
-      total_tokens: 10,
-      prompt_tokens_details: {
-        cached_tokens: 4,
-        cache_read_tokens: 4,
-        cache_write_tokens: 1,
-      },
-    });
-    expect(sdk.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        apiKey: 'key',
-        model: { id: 'cursor-model', params: [{ id: 'fast', value: 'false' }] },
-        tools: [],
-        local: expect.objectContaining({
-          settingSources: [],
-          store: expect.anything(),
-          cwd: expect.any(String),
-        }),
-      })
+
+    const noSystem = decodeRun(
+      buildCursorRequest({
+        model: 'cursor-model',
+        messages: [{ role: 'user', content: 'Hello' }],
+      }).request
     );
-    expect(sdk.create.mock.calls[0]![0].local.cwd.startsWith(join(tmpdir(), 'cursor-sdk-'))).toBe(
-      true
-    );
-    expect(agent[Symbol.asyncDispose]).toHaveBeenCalledOnce();
-    expect(await exists(sdk.storeRoots[0]!.replace(/\/store$/, ''))).toBe(false);
+    expect(noSystem.conversationState!.rootPromptMessagesJson).toEqual([]);
   });
 
-  it('emits no stream bytes before official SDK delta and puts role on first real delta', async () => {
-    let onDelta: ((event: any) => void) | undefined;
-    let finish!: () => void;
-    const terminal = new Promise<void>((resolve) => (finish = resolve));
-    const run = {
-      id: 'run-stream',
-      async *stream() {
-        await terminal;
-      },
-      wait: vi.fn(async () => ({ status: 'finished' })),
-      cancel: vi.fn(async () => finish()),
-    };
-    const agent = {
-      send: vi.fn(async (_prompt: string, options: any) => {
-        onDelta = options.onDelta;
-        return run;
-      }),
-      [Symbol.asyncDispose]: vi.fn(async () => undefined),
-    };
-    sdk.create.mockResolvedValue(agent);
-
-    const response = await executeCursorSdkRequest(
-      CURSOR_SDK_TRANSPORT_URL,
-      { Authorization: 'Bearer key' },
-      { ...payload, stream: true }
-    );
-    const reader = response!.body!.getReader();
-    let readSettled = false;
-    const firstRead = reader.read().then((value) => {
-      readSettled = true;
-      return value;
+  it('encodes prior user and assistant turns as structured history', () => {
+    const built = buildCursorRequest({
+      model: 'cursor-model',
+      messages: [
+        { role: 'system', content: 'System' },
+        { role: 'user', content: 'First' },
+        { role: 'assistant', content: 'Answer' },
+        { role: 'user', content: 'Second' },
+      ],
     });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(readSettled).toBe(false);
+    const run = decodeRun(built.request);
+    expect(run.conversationState!.turns).toHaveLength(1);
 
-    onDelta!({ update: { type: 'thinking-delta', text: 'think' } });
-    const first = new TextDecoder().decode((await firstRead).value);
-    expect(first).toContain('"role":"assistant"');
-    expect(first).toContain('"reasoning_content":"think"');
+    const turnId = run.conversationState!.turns[0]!;
+    const turn = fromBinary(
+      ConversationTurnStructureSchema,
+      built.blobs.get(Buffer.from(turnId).toString('hex'))!
+    ).turn.value!;
+    const user = fromBinary(
+      UserMessageSchema,
+      built.blobs.get(Buffer.from(turn.userMessage).toString('hex'))!
+    );
+    const step = fromBinary(
+      ConversationStepSchema,
+      built.blobs.get(Buffer.from(turn.steps[0]!).toString('hex'))!
+    );
 
-    onDelta!({ update: { type: 'text-delta', text: 'hello' } });
-    const second = new TextDecoder().decode((await reader.read()).value);
-    expect(second).toContain('"content":"hello"');
-    expect(second).not.toContain('"role":"assistant"');
-    finish();
-    await reader.cancel();
+    expect(user.text).toBe('First');
+    expect(step.message).toMatchObject({
+      case: 'assistantMessage',
+      value: { text: 'Answer' },
+    });
+    expect(run.action!.action).toMatchObject({
+      case: 'userMessageAction',
+      value: { userMessage: { text: 'Second' } },
+    });
   });
 
-  it('emits the finish chunk before the optional usage chunk and done marker', async () => {
-    mockAgent(
-      [
+  it('exposes only caller-provided tools', () => {
+    const built = buildCursorRequest({
+      ...payload,
+      tools: [
         {
-          type: 'usage',
-          usage: {
-            inputTokens: 3,
-            outputTokens: 2,
-            cacheReadTokens: 4,
-            cacheWriteTokens: 1,
-            totalTokens: 10,
+          type: 'function',
+          function: {
+            name: 'lookup',
+            description: 'Look up a value',
+            parameters: {
+              type: 'object',
+              properties: { query: { type: 'string' } },
+              required: ['query'],
+            },
           },
         },
       ],
-      { status: 'finished', result: 'answer' }
-    );
+    });
+    const run = decodeRun(built.request);
+    const tools = run.mcpTools!.mcpTools;
 
-    const response = await executeCursorSdkRequest(
-      CURSOR_SDK_TRANSPORT_URL,
-      { Authorization: 'Bearer key' },
-      { ...payload, stream: true }
-    );
-    const body = await response!.text();
-    const finishIndex = body.indexOf('"finish_reason":"stop"');
-    const usageIndex = body.indexOf('"prompt_tokens":8');
-    const doneIndex = body.indexOf('data: [DONE]');
-
-    expect(finishIndex).toBeGreaterThan(-1);
-    expect(usageIndex).toBeGreaterThan(finishIndex);
-    expect(doneIndex).toBeGreaterThan(usageIndex);
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toMatchObject({
+      name: 'lookup',
+      description: 'Look up a value',
+      providerIdentifier: 'client',
+      toolName: 'lookup',
+    });
+    expect(toJson(ValueSchema, tools[0]!.inputSchema!)).toEqual({
+      type: 'object',
+      properties: { query: { type: 'string' } },
+      required: ['query'],
+    });
   });
 
-  it('bridges SDK custom tools through OpenAI tool calls and resumes the same run', async () => {
-    let toolResult: Promise<unknown>;
-    let sendOptions: any;
-    const run = {
-      id: 'run-tools',
-      async *stream() {
-        const result = await toolResult;
-        sendOptions.onDelta({
-          update: { type: 'text-delta', text: `result: ${result}` },
-        });
-      },
-      wait: vi.fn(async () => ({ status: 'finished' })),
-      cancel: vi.fn(async () => undefined),
-    };
-    const agent = {
-      send: vi.fn(async (_prompt: string, options: any) => {
-        sendOptions = options;
-        const createOptions = sdk.create.mock.calls.at(-1)![0];
-        toolResult = createOptions.local.customTools.lookup.execute(
-          { query: 'status' },
-          { toolCallId: 'sdk-call' }
-        );
-        return run;
-      }),
-      [Symbol.asyncDispose]: vi.fn(async () => undefined),
-    };
-    sdk.create.mockResolvedValue(agent);
-
-    const tools = [
-      {
-        type: 'function',
-        function: {
-          name: 'lookup',
-          description: 'Look up a value',
-          parameters: {
-            type: 'object',
-            properties: { query: { type: 'string' } },
-            required: ['query'],
-          },
+  it('reconstructs tool results without requiring an in-memory bridge', () => {
+    const built = buildCursorRequest({
+      model: 'cursor-model',
+      messages: [
+        { role: 'user', content: 'Check status' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: 'call-1',
+              type: 'function',
+              function: { name: 'lookup', arguments: '{"query":"status"}' },
+            },
+          ],
         },
-      },
-    ];
-    const first = await executeCursorSdkRequest(
-      CURSOR_SDK_TRANSPORT_URL,
-      { Authorization: 'Bearer key' },
-      { ...payload, stream: true, tools }
-    );
-    const firstBody = await first!.text();
-    const toolCall = JSON.parse(
-      firstBody
-        .split('\n')
-        .find((line) => line.startsWith('data: {') && line.includes('tool_calls'))!
-        .slice(6)
-    ).choices[0].delta.tool_calls[0];
-
-    expect(toolCall).toMatchObject({
-      type: 'function',
-      function: { name: 'lookup', arguments: '{"query":"status"}' },
-    });
-    expect(firstBody).toContain('"finish_reason":"tool_calls"');
-    expect(sdk.create.mock.calls.at(-1)![0]).toMatchObject({
-      model: { id: 'cursor-model', params: [{ id: 'fast', value: 'false' }] },
-      tools: ['mcp'],
-      local: {
-        customTools: {
-          lookup: {
-            description: 'Look up a value',
-            inputSchema: tools[0]!.function.parameters,
-          },
+        { role: 'tool', tool_call_id: 'call-1', content: 'healthy' },
+      ],
+      tools: [
+        {
+          type: 'function',
+          function: { name: 'lookup', parameters: { type: 'object' } },
         },
-      },
+      ],
+    });
+    const run = decodeRun(built.request);
+    expect(run.action!.action.case).toBe('resumeAction');
+    const roots = run.conversationState!.rootPromptMessagesJson.map((id) =>
+      JSON.parse(new TextDecoder().decode(built.blobs.get(Buffer.from(id).toString('hex'))))
+    );
+    expect(roots.at(-1)).toEqual({
+      role: 'user',
+      content: [{ type: 'text', text: 'healthy' }],
+      tool_call_id: 'call-1',
     });
 
-    const second = await executeCursorSdkRequest(
-      CURSOR_SDK_TRANSPORT_URL,
-      { Authorization: 'Bearer key' },
-      {
-        ...payload,
-        stream: true,
-        tools,
-        messages: [
-          ...payload.messages,
-          {
-            role: 'assistant',
-            content: null,
-            tool_calls: [toolCall],
-          },
-          { role: 'tool', tool_call_id: toolCall.id, content: 'healthy' },
-        ],
-      }
+    const turnId = run.conversationState!.turns[0]!;
+    const turn = fromBinary(
+      ConversationTurnStructureSchema,
+      built.blobs.get(Buffer.from(turnId).toString('hex'))!
+    ).turn.value!;
+    const step = fromBinary(
+      ConversationStepSchema,
+      built.blobs.get(Buffer.from(turn.steps[0]!).toString('hex'))!
     );
-    const secondBody = await second!.text();
+    if (step.message.case !== 'toolCall' || step.message.value.tool.case !== 'mcpToolCall') {
+      throw new Error('Expected an MCP tool call step');
+    }
+    const call = step.message.value.tool.value;
 
-    expect(secondBody).toContain('"content":"result: healthy"');
-    expect(secondBody).toContain('"finish_reason":"stop"');
-    expect(agent.send).toHaveBeenCalledOnce();
-    expect(agent[Symbol.asyncDispose]).toHaveBeenCalledOnce();
-  });
-
-  it('bridges non-streaming tool calls and continuation results', async () => {
-    let toolResult: Promise<unknown>;
-    let sendOptions: any;
-    const run = {
-      id: 'run-tools-json',
-      async *stream() {
-        const result = await toolResult;
-        sendOptions.onDelta({
-          update: { type: 'text-delta', text: `json: ${result}` },
-        });
-      },
-      wait: vi.fn(async () => ({ status: 'finished' })),
-      cancel: vi.fn(async () => undefined),
-    };
-    const agent = {
-      send: vi.fn(async (_prompt: string, options: any) => {
-        sendOptions = options;
-        toolResult = sdk.create.mock.calls
-          .at(-1)![0]
-          .local.customTools.lookup.execute({ query: 'status' }, { toolCallId: 'sdk-json-call' });
-        return run;
-      }),
-      [Symbol.asyncDispose]: vi.fn(async () => undefined),
-    };
-    sdk.create.mockResolvedValue(agent);
-    const tools = [
-      {
-        type: 'function',
-        function: {
-          name: 'lookup',
-          parameters: {
-            type: 'object',
-            properties: { query: { type: 'string' } },
-          },
-        },
-      },
-    ];
-
-    const first = await executeCursorSdkRequest(
-      CURSOR_SDK_TRANSPORT_URL,
-      { Authorization: 'Bearer key' },
-      { ...payload, tools }
-    );
-    const firstBody = await first!.json();
-    const toolCall = firstBody.choices[0].message.tool_calls[0];
-    expect(firstBody.choices[0].finish_reason).toBe('tool_calls');
-
-    const second = await executeCursorSdkRequest(
-      CURSOR_SDK_TRANSPORT_URL,
-      { Authorization: 'Bearer key' },
-      {
-        ...payload,
-        tools,
-        messages: [
-          ...payload.messages,
-          { role: 'assistant', content: null, tool_calls: [toolCall] },
-          { role: 'tool', tool_call_id: toolCall.id, content: 'healthy' },
-        ],
-      }
-    );
-    const secondBody = await second!.json();
-
-    expect(secondBody.choices[0]).toMatchObject({
-      message: { content: 'json: healthy' },
-      finish_reason: 'stop',
-    });
-    expect(agent.send).toHaveBeenCalledOnce();
-    expect(agent[Symbol.asyncDispose]).toHaveBeenCalledOnce();
-  });
-
-  it('cancels active run and cleans workspace when response stream is cancelled', async () => {
-    let unblock!: () => void;
-    const blocked = new Promise<void>((resolve) => (unblock = resolve));
-    const run = {
-      id: 'run-cancel',
-      async *stream() {
-        await blocked;
-      },
-      wait: vi.fn(),
-      cancel: vi.fn(async () => unblock()),
-    };
-    const agent = {
-      send: vi.fn(async () => run),
-      [Symbol.asyncDispose]: vi.fn(async () => undefined),
-    };
-    sdk.create.mockResolvedValue(agent);
-
-    const response = await executeCursorSdkRequest(
-      CURSOR_SDK_TRANSPORT_URL,
-      { Authorization: 'Bearer key' },
-      { ...payload, stream: true }
-    );
-    await response!.body!.cancel();
-
-    expect(run.cancel).toHaveBeenCalledOnce();
-    expect(agent[Symbol.asyncDispose]).toHaveBeenCalledOnce();
-    expect(await exists(sdk.storeRoots[0]!.replace(/\/store$/, ''))).toBe(false);
-  });
-
-  it('aborts promptly during pending Agent.create and disposes late agent', async () => {
-    let resolveCreate!: (agent: any) => void;
-    sdk.create.mockReturnValue(new Promise((resolve) => (resolveCreate = resolve)));
-    const controller = new AbortController();
-    const execution = executeCursorSdkRequest(
-      CURSOR_SDK_TRANSPORT_URL,
-      { Authorization: 'Bearer key' },
-      payload,
-      controller.signal
-    );
-    await waitUntil(() => sdk.create.mock.calls.length === 1);
-    controller.abort(new DOMException('cancelled', 'AbortError'));
-    await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
-
-    const lateAgent = { [Symbol.asyncDispose]: vi.fn(async () => undefined) };
-    resolveCreate(lateAgent);
-    await waitUntil(() => lateAgent[Symbol.asyncDispose].mock.calls.length === 1);
-    expect(await exists(sdk.storeRoots[0]!.replace(/\/store$/, ''))).toBe(false);
-  });
-
-  it('maps pre-stream SDK status and code into provider JSON response', async () => {
-    sdk.create.mockRejectedValue(
-      Object.assign(new Error('revoked Cursor key'), {
-        status: 401,
-        code: 'authentication_failed',
-      })
-    );
-
-    const response = await executeCursorSdkRequest(
-      CURSOR_SDK_TRANSPORT_URL,
-      { Authorization: 'Bearer key' },
-      payload
-    );
-
-    expect(response!.status).toBe(401);
-    expect(await response!.json()).toEqual({
-      error: {
-        message: 'revoked Cursor key',
-        type: 'cursor_sdk_error',
-        code: 'authentication_failed',
-      },
+    expect(call.args).toMatchObject({ toolCallId: 'call-1', toolName: 'lookup' });
+    expect(call.result!.result).toMatchObject({
+      case: 'success',
+      value: { content: [{ content: { case: 'text', value: { text: 'healthy' } } }] },
     });
   });
 
-  it('rejects forced tool choice because Cursor cannot guarantee it', async () => {
+  it('rejects forced tool choice before opening a transport', async () => {
     const response = await executeCursorSdkRequest(
       CURSOR_SDK_TRANSPORT_URL,
       { Authorization: 'Bearer key' },
-      {
-        ...payload,
-        tools: [{ type: 'function', function: { name: 'lookup' } }],
-        tool_choice: 'required',
-      }
+      { ...payload, tools: [], tool_choice: 'required' }
     );
 
     expect(response!.status).toBe(400);
     expect(await response!.text()).toContain('cannot guarantee forced tool choice');
-    expect(sdk.create).not.toHaveBeenCalled();
   });
 
-  it('rejects image content with 400', async () => {
-    const request = {
-      ...payload,
-      messages: [
-        {
-          role: 'user',
-          content: [{ type: 'image_url', image_url: { url: 'https://x' } }],
-        },
-      ],
-    };
+  it('maps Cursor protocol deltas to OpenAI SSE', async () => {
+    const request = Object.assign(new EventEmitter(), {
+      write: vi.fn(),
+      close: vi.fn(),
+    });
+    const client = Object.assign(new EventEmitter(), {
+      request: vi.fn(() => request),
+      close: vi.fn(),
+    });
+    transport.connect.mockReturnValue(client);
+
     const response = await executeCursorSdkRequest(
       CURSOR_SDK_TRANSPORT_URL,
       { Authorization: 'Bearer key' },
-      request
+      { ...payload, stream: true }
     );
+    const body = response!.text();
 
-    expect(response!.status).toBe(400);
-    expect(await response!.text()).toContain('image or non-text');
-    expect(sdk.create).not.toHaveBeenCalled();
+    request.emit('response', { ':status': 200 });
+    request.emit(
+      'data',
+      connectFrame(
+        toBinary(
+          AgentServerMessageSchema,
+          create(AgentServerMessageSchema, {
+            message: {
+              case: 'interactionUpdate',
+              value: create(InteractionUpdateSchema, {
+                message: {
+                  case: 'textDelta',
+                  value: create(TextDeltaUpdateSchema, { text: 'answer' }),
+                },
+              }),
+            },
+          })
+        )
+      )
+    );
+    request.emit('end');
+
+    const text = await body;
+    expect(text).toContain('"role":"assistant"');
+    expect(text).toContain('"content":"answer"');
+    expect(text).toContain('"finish_reason":"stop"');
+    expect(text).toContain('data: [DONE]');
+    expect(request.write).toHaveBeenCalledOnce();
+    expect(request.close).toHaveBeenCalledOnce();
+    expect(client.close).toHaveBeenCalledOnce();
   });
 });
+
+function connectFrame(data: Uint8Array): Buffer {
+  const result = Buffer.alloc(5 + data.byteLength);
+  result.writeUInt32BE(data.byteLength, 1);
+  result.set(data, 5);
+  return result;
+}
