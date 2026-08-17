@@ -1,7 +1,7 @@
 import { create, fromBinary, toBinary, toJson } from '@bufbuild/protobuf';
 import { ValueSchema } from '@bufbuild/protobuf/wkt';
 import { EventEmitter } from 'node:events';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AgentClientMessageSchema,
   AgentServerMessageSchema,
@@ -38,7 +38,15 @@ function decodeRun(request: Uint8Array) {
 }
 
 describe('Cursor protocol executor', () => {
-  beforeEach(() => transport.connect.mockReset());
+  beforeEach(() => {
+    transport.connect.mockReset();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ accessToken: 'cursor-access-token' }))
+    );
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
 
   it('maps developer messages to system without injecting text', () => {
     expect(normalizeCursorMessages(payload)).toEqual([
@@ -108,6 +116,59 @@ describe('Cursor protocol executor', () => {
       case: 'userMessageAction',
       value: { userMessage: { text: 'Second' } },
     });
+  });
+
+  it('encodes Pi tool-result images in Cursor selected context', () => {
+    const png =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X2NDNwAAAABJRU5ErkJggg==';
+    const imagePayload = {
+      model: 'cursor-model',
+      messages: [
+        { role: 'user', content: 'Inspect an image.' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: 'call-image',
+              type: 'function',
+              function: { name: 'read', arguments: '{"path":"image.png"}' },
+            },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'call-image', content: '(see attached image)' },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Attached image(s) from tool result:' },
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${png}` } },
+          ],
+        },
+      ],
+    };
+
+    expect(normalizeCursorMessages(imagePayload)[3]).toMatchObject({
+      role: 'user',
+      content: 'Attached image(s) from tool result:',
+      images: [{ mimeType: 'image/png' }],
+    });
+
+    const run = decodeRun(buildCursorRequest(imagePayload).request);
+    const action = run.action?.action;
+    if (action?.case !== 'userMessageAction') {
+      throw new Error('Expected a user message action');
+    }
+    const selectedImages = action.value.userMessage!.selectedContext?.selectedImages;
+    expect(selectedImages).toHaveLength(1);
+    const image = selectedImages?.[0];
+    if (!image || image.dataOrBlobId.case !== 'data') {
+      throw new Error('Expected inline image data');
+    }
+    expect(image).toMatchObject({
+      mimeType: 'image/png',
+      dataOrBlobId: { case: 'data' },
+    });
+    expect(Buffer.from(image.dataOrBlobId.value).toString('base64')).toBe(png);
   });
 
   it('exposes only caller-provided tools', () => {
@@ -230,6 +291,17 @@ describe('Cursor protocol executor', () => {
       { ...payload, stream: true }
     );
     const body = response!.text();
+
+    expect(fetch).toHaveBeenCalledWith(
+      'https://api2.cursor.sh/auth/exchange_user_api_key',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Authorization: 'Bearer key' }),
+      })
+    );
+    expect(client.request).toHaveBeenCalledWith(
+      expect.objectContaining({ authorization: 'Bearer cursor-access-token' })
+    );
 
     request.emit('response', { ':status': 200 });
     request.emit(
