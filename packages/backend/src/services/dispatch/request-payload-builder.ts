@@ -184,6 +184,12 @@ export async function buildRequestPayload(
     payload = adapter.preDispatch(payload, options);
   }
 
+  if (cursorNative && typeof request.metadata?.plexus_metadata?.cursorFast === 'boolean') {
+    payload.plexus_cursor_fast = request.metadata.plexus_metadata.cursorFast;
+  } else {
+    delete payload.plexus_cursor_fast;
+  }
+
   if (adapters.length > 0) {
     logger.debug(
       `Adapters applied (preDispatch): [${adapters.map((entry) => entry.adapter.name).join(', ')}] ` +

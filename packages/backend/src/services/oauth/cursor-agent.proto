@@ -68,7 +68,10 @@ message ConversationStateStructure {
   string client_name = 22;
 }
 
-message RequestedModel { string model_id = 1; }
+message RequestedModel {
+  string model_id = 1;
+  repeated RequestedModelParameter parameters = 3;
+}
 
 message AgentRunRequest {
   ConversationStateStructure conversation_state = 1;
@@ -288,3 +291,8 @@ message SelectedImage {
 }
 
 message SelectedContext { repeated SelectedImage selected_images = 1; }
+
+message RequestedModelParameter {
+  string id = 1;
+  string value = 2;
+}

@@ -80,6 +80,20 @@ describe('Cursor protocol executor', () => {
     expect(noSystem.conversationState!.rootPromptMessagesJson).toEqual([]);
   });
 
+  it.each([true, false])('encodes Cursor fast mode %s', (fast) => {
+    const run = decodeRun(buildCursorRequest({ ...payload, plexus_cursor_fast: fast }).request);
+
+    expect(run.requestedModel?.parameters).toEqual([
+      expect.objectContaining({ id: 'fast', value: String(fast) }),
+    ]);
+  });
+
+  it('rejects an invalid Cursor fast mode', () => {
+    expect(() => buildCursorRequest({ ...payload, plexus_cursor_fast: 'false' })).toThrow(
+      'plexus_cursor_fast must be a boolean.'
+    );
+  });
+
   it('encodes prior user and assistant turns as structured history', () => {
     const built = buildCursorRequest({
       model: 'cursor-model',
