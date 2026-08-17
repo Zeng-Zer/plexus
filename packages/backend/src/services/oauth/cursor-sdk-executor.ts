@@ -52,6 +52,8 @@ import {
   RequestContextResultSchema,
   RequestContextSchema,
   RequestContextSuccessSchema,
+  SelectedContextSchema,
+  SelectedImageSchema,
   SetBlobResultSchema,
   ShellRejectedSchema,
   ShellResultSchema,
@@ -71,10 +73,13 @@ import {
 const CURSOR_TRANSPORT = 'cursor-sdk://';
 const CURSOR_API_URL = 'https://api2.cursor.sh';
 const CURSOR_RPC_PATH = '/agent.v1.AgentService/Run';
+const CURSOR_TOKEN_EXCHANGE_URL = 'https://api2.cursor.sh/auth/exchange_user_api_key';
 const CURSOR_CLIENT_VERSION = 'cli-2026.05.01-eea359f';
 const CONNECT_END_STREAM_FLAG = 0b00000010;
 const HEARTBEAT_MS = 5_000;
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 5_242_880;
+const TOKEN_CACHE_MS = 4 * 60 * 1000;
 
 interface OpenAIToolCall {
   id: string;
@@ -85,8 +90,14 @@ interface OpenAIToolCall {
 interface OpenAIMessage {
   role: string;
   content?: unknown;
+  images?: CursorImage[];
   tool_call_id?: string;
   tool_calls?: OpenAIToolCall[];
+}
+
+interface CursorImage {
+  data: Uint8Array;
+  mimeType: string;
 }
 
 interface CursorToolCall {
@@ -134,6 +145,34 @@ interface CursorTransport {
 }
 
 const cursorToolSessions = new Map<string, CursorRunSession>();
+const cursorAccessTokens = new Map<string, { token: string; expiresAt: number }>();
+
+async function exchangeCursorApiKey(apiKey: string, signal?: AbortSignal): Promise<string> {
+  const cacheKey = createHash('sha256').update(apiKey).digest('hex');
+  const cached = cursorAccessTokens.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.token;
+
+  const timeout = AbortSignal.timeout(15_000);
+  const response = await fetch(CURSOR_TOKEN_EXCHANGE_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: '{}',
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+  });
+  if (!response.ok) {
+    throw new Error(`Cursor token exchange failed with status ${response.status}.`);
+  }
+  const body = (await response.json()) as { accessToken?: unknown };
+  if (typeof body.accessToken !== 'string' || !body.accessToken.trim()) {
+    throw new Error('Cursor token exchange returned no access token.');
+  }
+  const token = body.accessToken.trim();
+  cursorAccessTokens.set(cacheKey, { token, expiresAt: Date.now() + TOKEN_CACHE_MS });
+  return token;
+}
 
 function unsupported(message: string): Response {
   return Response.json(
@@ -142,20 +181,86 @@ function unsupported(message: string): Response {
   );
 }
 
-function contentText(content: unknown): string | null {
-  if (typeof content === 'string') return content;
-  if (content == null) return '';
+function decodeImage(data: string, mimeType: string): CursorImage {
+  const normalizedMimeType = mimeType.trim().toLowerCase().replace('image/jpg', 'image/jpeg');
+  const base64 = data.replace(/\s/g, '');
+  if (base64.length > Math.ceil((MAX_IMAGE_BYTES * 4) / 3) + 1024) {
+    throw new Error(`Cursor image exceeds the ${MAX_IMAGE_BYTES} byte limit.`);
+  }
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(base64)) {
+    throw new Error('Cursor image contains invalid base64 data.');
+  }
+  const bytes = new Uint8Array(Buffer.from(base64, 'base64'));
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_IMAGE_BYTES) {
+    throw new Error(`Cursor image must contain 1 to ${MAX_IMAGE_BYTES} bytes.`);
+  }
+  const detectedMimeType =
+    bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+      ? 'image/jpeg'
+      : bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+        ? 'image/png'
+        : bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46
+          ? 'image/gif'
+          : bytes[0] === 0x52 &&
+              bytes[1] === 0x49 &&
+              bytes[2] === 0x46 &&
+              bytes[3] === 0x46 &&
+              bytes[8] === 0x57 &&
+              bytes[9] === 0x45 &&
+              bytes[10] === 0x42 &&
+              bytes[11] === 0x50
+            ? 'image/webp'
+            : undefined;
+  if (!detectedMimeType) {
+    throw new Error('Cursor supports JPEG, PNG, GIF, and WebP images only.');
+  }
+  if (normalizedMimeType !== detectedMimeType) {
+    throw new Error(`Cursor image MIME type ${normalizedMimeType} does not match its data.`);
+  }
+  return { data: bytes, mimeType: detectedMimeType };
+}
+
+function parseContent(content: unknown): { text: string; images: CursorImage[] } | null {
+  if (typeof content === 'string') return { text: content, images: [] };
+  if (content == null) return { text: '', images: [] };
   if (!Array.isArray(content)) return null;
-  const parts: string[] = [];
+  const text: string[] = [];
+  const images: CursorImage[] = [];
   for (const part of content) {
     if (!part || typeof part !== 'object') return null;
     if ((part as any).type === 'text' && typeof (part as any).text === 'string') {
-      parts.push((part as any).text);
+      text.push((part as any).text);
+      continue;
+    }
+    if ((part as any).type === 'image_url') {
+      const imageUrl = (part as any).image_url;
+      const url = typeof imageUrl === 'string' ? imageUrl : imageUrl?.url;
+      if (typeof url !== 'string') return null;
+      if (/^https?:\/\//i.test(url)) {
+        throw new Error('Cursor supports inline image data only, not remote image URLs.');
+      }
+      const match = url.match(/^data:([^;,]+)(?:;[^,]*)?;base64,(.*)$/is);
+      if (!match?.[1] || match[2] === undefined) {
+        throw new Error('Cursor image_url must use data:image/...;base64,... format.');
+      }
+      images.push(decodeImage(match[2], match[1]));
+      continue;
+    }
+    if (
+      (part as any).type === 'image' &&
+      typeof (part as any).data === 'string' &&
+      typeof (part as any).mimeType === 'string'
+    ) {
+      images.push(decodeImage((part as any).data, (part as any).mimeType));
       continue;
     }
     return null;
   }
-  return parts.join('');
+  return { text: text.join(''), images };
+}
+
+function contentText(content: unknown): string | null {
+  return parseContent(content)?.text ?? null;
 }
 
 /** Cursor supports system/user/assistant roots. Developer messages map to system. */
@@ -164,13 +269,18 @@ export function normalizeCursorMessages(payload: any): OpenAIMessage[] {
     throw new Error('Cursor requires at least one chat message.');
   }
   return payload.messages.map((message: OpenAIMessage) => {
-    const content = contentText(message?.content);
-    if (content === null) {
+    const parsed = parseContent(message?.content);
+    if (!parsed) {
       throw new Error('Cursor does not support this non-text message content.');
     }
+    const role = message.role === 'developer' ? 'system' : message.role;
+    if (parsed.images.length > 0 && role !== 'user') {
+      throw new Error('Cursor supports images in user messages only.');
+    }
     return {
-      role: message.role === 'developer' ? 'system' : message.role,
-      content,
+      role,
+      content: parsed.text,
+      ...(parsed.images.length > 0 ? { images: parsed.images } : {}),
       ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
       ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
     };
@@ -232,6 +342,29 @@ function mcpResult(content: string) {
   });
 }
 
+function cursorUserMessage(text: string, images: CursorImage[] = []) {
+  const id = crypto.randomUUID();
+  return create(UserMessageSchema, {
+    text,
+    messageId: id,
+    mode: 1,
+    correlationId: id,
+    ...(images.length > 0
+      ? {
+          selectedContext: create(SelectedContextSchema, {
+            selectedImages: images.map((image) =>
+              create(SelectedImageSchema, {
+                uuid: crypto.randomUUID(),
+                mimeType: image.mimeType,
+                dataOrBlobId: { case: 'data', value: image.data },
+              })
+            ),
+          }),
+        }
+      : {}),
+  });
+}
+
 function historyTurns(messages: OpenAIMessage[], blobs: Map<string, Uint8Array>): Uint8Array[] {
   const turns: Uint8Array[] = [];
   let current: { user: Uint8Array; steps: Uint8Array[] } | undefined;
@@ -255,16 +388,9 @@ function historyTurns(messages: OpenAIMessage[], blobs: Map<string, Uint8Array>)
     if (message.role === 'system' || message.role === 'developer') continue;
     if (message.role === 'user') {
       flush();
-      const id = crypto.randomUUID();
       current = {
         user: storeBlob(
-          toBinary(
-            UserMessageSchema,
-            create(UserMessageSchema, {
-              text: message.content as string,
-              messageId: id,
-            })
-          ),
+          toBinary(UserMessageSchema, cursorUserMessage(message.content as string, message.images)),
           blobs
         ),
         steps: [],
@@ -399,7 +525,6 @@ export function buildCursorRequest(payload: any): {
     );
   const turns = historyTurns(history, blobs);
   const userText = messages[lastUser]!.content as string;
-  const id = crypto.randomUUID();
   const tools = clientTools(payload);
   const request = create(AgentClientMessageSchema, {
     message: {
@@ -415,10 +540,7 @@ export function buildCursorRequest(payload: any): {
             : {
                 case: 'userMessageAction',
                 value: create(UserMessageActionSchema, {
-                  userMessage: create(UserMessageSchema, {
-                    text: userText,
-                    messageId: id,
-                  }),
+                  userMessage: cursorUserMessage(userText, messages[lastUser]!.images),
                 }),
               },
         }),
@@ -912,7 +1034,11 @@ function openTransport(
         try {
           const envelope = JSON.parse(body.toString());
           if (envelope.error) {
-            finish(new Error(envelope.error.message || 'Cursor request failed.'));
+            finish(
+              new Error(
+                `Cursor Connect ${envelope.error.code ?? 'error'}: ${envelope.error.message || 'request failed.'}`
+              )
+            );
           }
         } catch {
           finish(new Error('Cursor returned an invalid end-stream frame.'));
@@ -1168,6 +1294,22 @@ export async function executeCursorSdkRequest(
   } catch (error) {
     return unsupported(error instanceof Error ? error.message : String(error));
   }
+
+  let accessToken: string;
+  try {
+    accessToken = await exchangeCursorApiKey(apiKey, signal);
+  } catch (error) {
+    return Response.json(
+      {
+        error: {
+          message: error instanceof Error ? error.message : String(error),
+          type: 'api_error',
+          code: 'cursor_auth_failed',
+        },
+      },
+      { status: 502 }
+    );
+  }
   const session: CursorRunSession = {
     apiKey,
     model: payload.model,
@@ -1181,7 +1323,7 @@ export async function executeCursorSdkRequest(
   sessionBlobs.set(session, built.blobs);
   sessionTools.set(session, built.tools);
   sessionUsage.set(session, { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
-  session.transport = openTransport(session, apiKey, built.request);
+  session.transport = openTransport(session, accessToken, built.request);
   return payload.stream === true ? renderStream(session, signal) : renderJson(session, signal);
 }
 

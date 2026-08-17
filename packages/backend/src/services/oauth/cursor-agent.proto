@@ -30,6 +30,7 @@ message ResumeAction {}
 message UserMessage {
   string text = 1;
   string message_id = 2;
+  optional SelectedContext selected_context = 3;
   int32 mode = 4;
   string correlation_id = 17;
 }
@@ -275,3 +276,15 @@ message McpToolResult {
   oneof result { McpSuccess success = 1; McpError error = 2; }
 }
 message ToolCall { oneof tool { McpToolCall mcp_tool_call = 15; } }
+
+message SelectedImage {
+  string uuid = 2;
+  string path = 3;
+  string mime_type = 7;
+  oneof data_or_blob_id {
+    bytes blob_id = 1;
+    bytes data = 8;
+  }
+}
+
+message SelectedContext { repeated SelectedImage selected_images = 1; }
