@@ -40,6 +40,7 @@ describe('Cursor request payload bypass', () => {
         stream: true,
         incomingApiType: 'chat',
         originalBody,
+        metadata: { plexus_metadata: { cursorFast: false } },
       } as any,
       route,
       transformer,
@@ -50,6 +51,7 @@ describe('Cursor request payload bypass', () => {
     expect(result.payload).toMatchObject({
       model: 'cursor-model',
       messages: originalBody.messages,
+      plexus_cursor_fast: false,
     });
   });
 
@@ -69,6 +71,7 @@ describe('Cursor request payload bypass', () => {
           messages: [{ role: 'user', content: 'hello' }],
           incomingApiType,
           originalBody: { model: 'alias' },
+          metadata: { plexus_metadata: { cursorFast: true } },
         } as any,
         route,
         transformer,
@@ -77,6 +80,31 @@ describe('Cursor request payload bypass', () => {
 
       expect(result.bypassTransformation).toBe(false);
       expect(result.payload.messages[0].content).toBe(`from-${incomingApiType}`);
+      expect(result.payload.plexus_cursor_fast).toBe(true);
     }
   );
+
+  it('does not forward the Cursor flag to another provider', async () => {
+    const result = await buildRequestPayload(
+      {
+        model: 'alias',
+        messages: [{ role: 'user', content: 'hello' }],
+        incomingApiType: 'chat',
+        originalBody: {
+          model: 'alias',
+          messages: [{ role: 'user', content: 'hello' }],
+        },
+        metadata: { plexus_metadata: { cursorFast: true } },
+      } as any,
+      {
+        provider: 'other-provider',
+        model: 'other-model',
+        config: { api_base_url: 'https://example.com/v1/chat/completions' },
+      } as any,
+      { transformRequest: async () => ({}) },
+      'chat'
+    );
+
+    expect(result.payload).not.toHaveProperty('plexus_cursor_fast');
+  });
 });

@@ -48,6 +48,7 @@ import {
   RecordScreenFailureSchema,
   RecordScreenResultSchema,
   RequestedModelSchema,
+  RequestedModelParameterSchema,
   ResumeActionSchema,
   RequestContextResultSchema,
   RequestContextSchema,
@@ -511,6 +512,12 @@ export function buildCursorRequest(payload: any): {
   blobs: Map<string, Uint8Array>;
   tools: McpToolDefinition[];
 } {
+  if (
+    payload?.plexus_cursor_fast !== undefined &&
+    typeof payload.plexus_cursor_fast !== 'boolean'
+  ) {
+    throw new Error('plexus_cursor_fast must be a boolean.');
+  }
   const messages = normalizeCursorMessages(payload);
   const blobs = new Map<string, Uint8Array>();
   const lastUser = messages.findLastIndex((message) => message.role === 'user');
@@ -544,7 +551,18 @@ export function buildCursorRequest(payload: any): {
                 }),
               },
         }),
-        requestedModel: create(RequestedModelSchema, { modelId: payload.model }),
+        requestedModel: create(RequestedModelSchema, {
+          modelId: payload.model,
+          parameters:
+            typeof payload.plexus_cursor_fast === 'boolean'
+              ? [
+                  create(RequestedModelParameterSchema, {
+                    id: 'fast',
+                    value: String(payload.plexus_cursor_fast),
+                  }),
+                ]
+              : [],
+        }),
         mcpTools: create(McpToolsSchema, { mcpTools: tools }),
         conversationId: crypto.randomUUID(),
       }),

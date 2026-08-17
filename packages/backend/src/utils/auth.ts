@@ -10,6 +10,11 @@ export function attachKeyAccessPolicy<T extends { metadata?: Record<string, any>
   request: FastifyRequest,
   unifiedRequest: T
 ): T {
+  const cursorFastHeader = Array.isArray(request.headers['x-plexus-cursor-fast'])
+    ? request.headers['x-plexus-cursor-fast'][0]
+    : request.headers['x-plexus-cursor-fast'];
+  const cursorFast =
+    cursorFastHeader === 'true' ? true : cursorFastHeader === 'false' ? false : undefined;
   const keyConfig = (request as any).keyConfig as
     | {
         allowedModels?: string[];
@@ -29,13 +34,14 @@ export function attachKeyAccessPolicy<T extends { metadata?: Record<string, any>
   const excludedProviders = keyConfig?.excludedProviders
     ?.map((entry) => entry.trim())
     .filter(Boolean);
+  const plexusKeyPolicy = {
+    ...(allowedModels && allowedModels.length > 0 ? { allowedModels } : {}),
+    ...(allowedProviders && allowedProviders.length > 0 ? { allowedProviders } : {}),
+    ...(excludedModels && excludedModels.length > 0 ? { excludedModels } : {}),
+    ...(excludedProviders && excludedProviders.length > 0 ? { excludedProviders } : {}),
+  };
 
-  if (
-    (!allowedModels || allowedModels.length === 0) &&
-    (!allowedProviders || allowedProviders.length === 0) &&
-    (!excludedModels || excludedModels.length === 0) &&
-    (!excludedProviders || excludedProviders.length === 0)
-  ) {
+  if (Object.keys(plexusKeyPolicy).length === 0 && cursorFast === undefined) {
     return unifiedRequest;
   }
 
@@ -45,12 +51,8 @@ export function attachKeyAccessPolicy<T extends { metadata?: Record<string, any>
       ...(unifiedRequest.metadata || {}),
       plexus_metadata: {
         ...(unifiedRequest.metadata?.plexus_metadata || {}),
-        plexus_key_policy: {
-          ...(allowedModels && allowedModels.length > 0 ? { allowedModels } : {}),
-          ...(allowedProviders && allowedProviders.length > 0 ? { allowedProviders } : {}),
-          ...(excludedModels && excludedModels.length > 0 ? { excludedModels } : {}),
-          ...(excludedProviders && excludedProviders.length > 0 ? { excludedProviders } : {}),
-        },
+        ...(cursorFast !== undefined ? { cursorFast } : {}),
+        ...(Object.keys(plexusKeyPolicy).length > 0 ? { plexus_key_policy: plexusKeyPolicy } : {}),
       },
     },
   };

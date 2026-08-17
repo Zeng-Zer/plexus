@@ -91,6 +91,7 @@ export interface KeyAccessPolicy {
 export interface PlexusMetadata {
   oauthProvider?: string;
   oauthAccount?: string;
+  cursorFast?: boolean;
   clientHeaders?: Record<string, unknown>;
   plexus_key_policy?: KeyAccessPolicy;
   /** Attached by attachQuotaContext() (quota-middleware.ts) after the

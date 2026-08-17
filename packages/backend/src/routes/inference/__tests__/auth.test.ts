@@ -10,19 +10,24 @@ import { SelectorFactory } from '../../../services/routing/selectors/factory';
 describe('Auth Middleware', () => {
   let fastify: FastifyInstance;
   let mockUsageStorage: UsageStorageService;
+  let capturedRequest: any;
 
   beforeAll(async () => {
     fastify = Fastify();
+    capturedRequest = null;
 
     // Mock dependencies
     const mockDispatcher = {
-      dispatch: vi.fn(async () => ({
-        id: '123',
-        model: 'gpt-4',
-        created: 123,
-        content: 'test content',
-        usage: { input_tokens: 10, output_tokens: 10, total_tokens: 20 },
-      })),
+      dispatch: vi.fn(async (request: any) => {
+        capturedRequest = request;
+        return {
+          id: '123',
+          model: 'gpt-4',
+          created: 123,
+          content: 'test content',
+          usage: { input_tokens: 10, output_tokens: 10, total_tokens: 20 },
+        };
+      }),
     } as unknown as Dispatcher;
 
     mockUsageStorage = {
@@ -80,6 +85,28 @@ describe('Auth Middleware', () => {
     const saveRequestCalls = (mockUsageStorage.saveRequest as any).mock.calls;
     const lastCall = saveRequestCalls[saveRequestCalls.length - 1];
     expect(lastCall[0].apiKey).toBe('test-key-1');
+  });
+
+  it.each([
+    ['true', true],
+    ['false', false],
+  ])('keeps x-plexus-cursor-fast=%s as internal metadata', async (header, expected) => {
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        authorization: 'Bearer sk-valid-key',
+        'content-type': 'application/json',
+        'x-plexus-cursor-fast': header,
+      },
+      payload: {
+        model: 'gpt-4',
+        messages: [],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(capturedRequest?.metadata?.plexus_metadata).toEqual({ cursorFast: expected });
   });
 
   it('persists and echoes a client request ID separately from the Plexus request ID', async () => {
