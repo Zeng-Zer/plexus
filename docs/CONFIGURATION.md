@@ -422,6 +422,7 @@ Quota checkers monitor upstream provider rate limits and prevent routing to exha
 | `openai-codex` | Codex quota (OAuth) | Reads token from database |
 | `claude-code` | Claude Code quota (OAuth) | Reads token from database |
 | `cursor` | Cursor subscription allowance (OAuth) | Exchanges the stored Cursor API key against Cursor's undocumented usage API |
+| `xai` | SuperGrok / X Premium+ weekly credits (OAuth) | Reads token from database; polls Grok CLI billing (`creditUsagePercent`) |
 | `zai` | ZAI balance |
 | `moonshot` | Moonshot balance |
 | `novita` | Novita balance |

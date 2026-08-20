@@ -308,6 +308,11 @@ const CursorQuotaCheckerOptionsSchema = z.object({
   timeoutMs: z.number().int().positive().optional(),
 });
 
+const XaiQuotaCheckerOptionsSchema = z.object({
+  endpoint: z.string().url().optional(),
+  timeoutMs: z.number().int().positive().optional(),
+});
+
 const WisdomGateQuotaCheckerOptionsSchema = z.object({
   session: z.string().trim().min(1, 'Session cookie is required'),
   endpoint: z.string().url().optional(),
@@ -490,6 +495,13 @@ const ProviderQuotaCheckerSchema = z.discriminatedUnion('type', [
     intervalMinutes: z.number().min(1).default(30),
     id: z.string().trim().min(1).optional(),
     options: CursorQuotaCheckerOptionsSchema.optional().default({}),
+  }),
+  z.object({
+    type: z.literal('xai'),
+    enabled: z.boolean().default(true),
+    intervalMinutes: z.number().min(1).default(30),
+    id: z.string().trim().min(1).optional(),
+    options: XaiQuotaCheckerOptionsSchema.optional().default({}),
   }),
   z.object({
     type: z.literal('wisdomgate'),

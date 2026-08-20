@@ -5947,6 +5947,7 @@
                     "claude-code",
                     "copilot",
                     "cursor",
+                    "xai",
                     "wisdomgate",
                     "apertis",
                     "poe",
@@ -5964,7 +5965,7 @@
                     "sakana",
                     "cline"
                   ],
-                  "count": 31
+                  "count": 32
                 }
               }
             }

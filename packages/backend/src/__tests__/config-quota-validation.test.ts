@@ -72,6 +72,37 @@ describe('config quota checker validation', () => {
     });
   });
 
+  it('accepts xai quota checker and injects OAuth account metadata', () => {
+    const config = validateConfig(
+      JSON.stringify({
+        providers: {
+          grok: {
+            api_base_url: 'oauth://',
+            api_key: 'oauth',
+            oauth_provider: 'xai',
+            oauth_account: 'personal',
+            quota_checker: { type: 'xai' },
+          },
+        },
+        models: {},
+        keys: {},
+      })
+    );
+
+    expect(config.quotas).toEqual([
+      expect.objectContaining({
+        id: 'grok',
+        provider: 'grok',
+        type: 'xai',
+        intervalMinutes: 30,
+        options: expect.objectContaining({
+          oauthProvider: 'xai',
+          oauthAccountId: 'personal',
+        }),
+      }),
+    ]);
+  });
+
   it('accepts cursor quota checker and injects OAuth account metadata', () => {
     const config = validateConfig(
       JSON.stringify({
