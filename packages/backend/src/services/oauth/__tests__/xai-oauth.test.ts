@@ -32,7 +32,7 @@ describe('xAI OAuth provider', () => {
     expect(nativeOAuthApiType('xai', 'grok-4.5')).toBe('responses');
   });
 
-  it('posts chat completions to api.x.ai with the OAuth bearer token', () => {
+  it('posts chat completions to the Grok CLI proxy with session headers', () => {
     const prepared = prepareOAuthNativeRequest(
       'xai',
       'grok-4.6',
@@ -42,8 +42,12 @@ describe('xAI OAuth provider', () => {
       { apiType: 'chat', convId: 'conv_abc123' }
     );
 
-    expect(prepared.url).toBe('https://api.x.ai/v1/chat/completions');
+    expect(prepared.url).toBe('https://cli-chat-proxy.grok.com/v1/chat/completions');
     expect(prepared.headers.Authorization).toBe('Bearer xai-oauth-token');
+    expect(prepared.headers['x-xai-token-auth']).toBe('xai-grok-cli');
+    expect(prepared.headers['x-grok-client-identifier']).toBe('grok-shell');
+    expect(prepared.headers['x-grok-client-version']).toBe('1.0.5');
+    expect(prepared.headers['x-grok-model-override']).toBe('grok-4.6');
     expect(prepared.headers['x-grok-conv-id']).toBe('conv_abc123');
     expect(prepared.body.stream_options).toEqual({ include_usage: true });
   });
@@ -58,9 +62,10 @@ describe('xAI OAuth provider', () => {
       { apiType: 'responses', convId: 'conv_abc123' }
     );
 
-    expect(prepared.url).toBe('https://api.x.ai/v1/responses');
+    expect(prepared.url).toBe('https://cli-chat-proxy.grok.com/v1/responses');
     expect(prepared.body.stream_options).toBeUndefined();
     expect(prepared.body.prompt_cache_key).toBe('conv_abc123');
     expect(prepared.headers['x-grok-conv-id']).toBe('conv_abc123');
+    expect(prepared.headers['x-grok-model-override']).toBe('grok-4.5');
   });
 });

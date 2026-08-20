@@ -70,11 +70,14 @@ export interface PreparedOAuthRequest {
   reverseResponseFrame: (frame: string) => string;
 }
 
+/** SuperGrok session tokens belong on the Grok CLI proxy, not api.x.ai. */
+const XAI_OAUTH_BASE_URL = 'https://cli-chat-proxy.grok.com/v1';
+
 /** Provider-level fallback base URLs for models not present in the registry. */
 const OAUTH_PROVIDER_BASE_URLS: Record<string, string> = {
   anthropic: 'https://api.anthropic.com',
   'openai-codex': 'https://chatgpt.com/backend-api',
-  xai: 'https://api.x.ai/v1',
+  xai: XAI_OAUTH_BASE_URL,
 };
 
 /**
@@ -82,8 +85,15 @@ const OAUTH_PROVIDER_BASE_URLS: Record<string, string> = {
  * pi-ai builtin registry (the same source `oauth-transformer` used via the
  * model's `baseUrl`), then falls back to the provider-level default so custom
  * or not-yet-registered model ids still resolve. Trailing slash stripped.
+ *
+ * xAI OAuth is credential-routed: the pi-ai catalog points at api.x.ai (the
+ * metered developer API). SuperGrok session tokens belong on the Grok CLI
+ * proxy instead.
  */
 function resolveOAuthBaseUrl(provider: OAuthProvider, modelId: string): string {
+  if (provider === 'xai') {
+    return XAI_OAUTH_BASE_URL.replace(/\/$/, '');
+  }
   const model = getCatalogModel(provider, modelId);
   const baseUrl = (model as any)?.baseUrl || OAUTH_PROVIDER_BASE_URLS[provider];
   if (!baseUrl) {
@@ -561,6 +571,11 @@ function prepareXaiOAuthRequest(
       'Content-Type': 'application/json',
       Accept: streaming ? 'text/event-stream' : 'application/json',
       Authorization: `Bearer ${token}`,
+      'x-xai-token-auth': 'xai-grok-cli',
+      'x-grok-client-identifier': 'grok-shell',
+      // ponytail: pin matches current grok CLI; bump if the proxy 426s
+      'x-grok-client-version': '1.0.5',
+      'x-grok-model-override': modelId,
       ...(cacheKey ? { 'x-grok-conv-id': cacheKey } : {}),
     },
     body,
