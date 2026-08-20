@@ -145,6 +145,95 @@ describe('GET /v1/models', () => {
   });
 });
 
+describe('GET /v1/models – disabled targets', () => {
+  const providers = {
+    openai: { type: 'openai', api_base_url: 'https://api.openai.com/v1', models: { 'gpt-4': {} } },
+    anthropic: {
+      type: 'anthropic',
+      api_base_url: 'https://api.anthropic.com',
+      models: { 'claude-3': {} },
+    },
+  };
+
+  it('omits aliases whose only target is disabled', async () => {
+    const fastify = Fastify();
+    await registerModelsRoute(fastify);
+
+    setConfigForTesting({
+      providers,
+      models: {
+        live: { targets: [{ provider: 'openai', model: 'gpt-4' }] },
+        dead: { targets: [{ provider: 'openai', model: 'gpt-4', enabled: false }] },
+      },
+    } as unknown as PlexusConfig);
+
+    const response = await fastify.inject({ method: 'GET', url: '/v1/models' });
+    expect(response.json().data.map((m: { id: string }) => m.id)).toEqual(['live']);
+  });
+
+  it('omits aliases whose only remaining provider is disabled', async () => {
+    const fastify = Fastify();
+    await registerModelsRoute(fastify);
+
+    setConfigForTesting({
+      providers: {
+        ...providers,
+        openai: { ...providers.openai, enabled: false },
+      },
+      models: {
+        dead: { targets: [{ provider: 'openai', model: 'gpt-4' }] },
+        live: { targets: [{ provider: 'anthropic', model: 'claude-3' }] },
+      },
+    } as unknown as PlexusConfig);
+
+    const response = await fastify.inject({ method: 'GET', url: '/v1/models' });
+    expect(response.json().data.map((m: { id: string }) => m.id)).toEqual(['live']);
+  });
+
+  it('keeps aliases that still have one enabled target', async () => {
+    const fastify = Fastify();
+    await registerModelsRoute(fastify);
+
+    setConfigForTesting({
+      providers,
+      models: {
+        mixed: {
+          targets: [
+            { provider: 'openai', model: 'gpt-4', enabled: false },
+            { provider: 'anthropic', model: 'claude-3' },
+          ],
+        },
+      },
+    } as unknown as PlexusConfig);
+
+    const response = await fastify.inject({ method: 'GET', url: '/v1/models' });
+    expect(response.json().data.map((m: { id: string }) => m.id)).toEqual(['mixed']);
+  });
+
+  it('follows enabled alias-refs and skips disabled ones', async () => {
+    const fastify = Fastify();
+    await registerModelsRoute(fastify);
+
+    setConfigForTesting({
+      providers,
+      models: {
+        concrete: { targets: [{ provider: 'openai', model: 'gpt-4' }] },
+        via: { targets: [{ alias: 'concrete' }] },
+        skipped: { targets: [{ alias: 'concrete', enabled: false }] },
+        dangling: { targets: [{ alias: 'skipped' }] },
+      },
+    } as unknown as PlexusConfig);
+
+    const response = await fastify.inject({ method: 'GET', url: '/v1/models' });
+    expect(
+      response
+        .json()
+        .data.map((m: { id: string }) => m.id)
+        .sort()
+    ).toEqual(['concrete', 'via'].sort());
+  });
+});
+
 // ─── Vision fallthrough modality injection ──────────────
 
 describe('GET /v1/models – vision fallthrough modalities', () => {
