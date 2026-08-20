@@ -45,4 +45,26 @@ describe('setupProviderHeaders', () => {
 
     expect(headers).not.toHaveProperty('anthropic-beta');
   });
+
+  test('sets x-grok-conv-id only for xAI targets', () => {
+    const xai = setupProviderHeaders(
+      { provider: 'xai', config: { api_key: 'provider-key' } } as any,
+      'chat',
+      {
+        stream: false,
+        cacheRoutingHeaders: { 'x-grok-conv-id': 'conv_abc123' },
+      } as any
+    );
+    expect(xai['x-grok-conv-id']).toBe('conv_abc123');
+
+    const openai = setupProviderHeaders(
+      { provider: 'openai', config: { api_key: 'provider-key' } } as any,
+      'chat',
+      {
+        stream: false,
+        cacheRoutingHeaders: { 'x-grok-conv-id': 'conv_abc123' },
+      } as any
+    );
+    expect(openai).not.toHaveProperty('x-grok-conv-id');
+  });
 });

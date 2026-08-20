@@ -74,6 +74,7 @@ export interface PreparedOAuthRequest {
 const OAUTH_PROVIDER_BASE_URLS: Record<string, string> = {
   anthropic: 'https://api.anthropic.com',
   'openai-codex': 'https://chatgpt.com/backend-api',
+  xai: 'https://api.x.ai/v1',
 };
 
 /**
@@ -524,10 +525,53 @@ function prepareCopilotOAuthRequest(
   };
 }
 
+function xaiEndpoint(apiType: string): string {
+  return apiType === 'responses' ? '/responses' : '/chat/completions';
+}
+
+function adornXaiBody(body: any, apiType: string, streaming: boolean): any {
+  if (apiType !== 'chat' || !streaming) return body;
+  const next: any = { ...(body ?? {}) };
+  const existing =
+    next.stream_options && typeof next.stream_options === 'object' ? next.stream_options : {};
+  next.stream_options = { ...existing, include_usage: existing.include_usage ?? true };
+  return next;
+}
+
+function prepareXaiOAuthRequest(
+  modelId: string,
+  token: string,
+  nativeBody: any,
+  streaming: boolean,
+  apiType: string,
+  convId?: string
+): PreparedOAuthRequest {
+  let body = adornXaiBody(nativeBody, apiType, streaming);
+  const cacheKey =
+    (typeof convId === 'string' && convId.trim()) ||
+    (typeof body?.prompt_cache_key === 'string' && body.prompt_cache_key.trim()) ||
+    '';
+  if (apiType === 'responses' && cacheKey && !body.prompt_cache_key) {
+    body = { ...body, prompt_cache_key: cacheKey };
+  }
+  const baseUrl = resolveOAuthBaseUrl('xai', modelId);
+  return {
+    url: `${baseUrl}${xaiEndpoint(apiType)}`,
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: streaming ? 'text/event-stream' : 'application/json',
+      Authorization: `Bearer ${token}`,
+      ...(cacheKey ? { 'x-grok-conv-id': cacheKey } : {}),
+    },
+    body,
+    reverseResponseFrame: (frame) => frame,
+  };
+}
+
 /**
  * Prepare a native OAuth request for the standard dispatch path.
  *
- * @param provider  OAuth provider id (`anthropic`, `openai-codex`, or `github-copilot`).
+ * @param provider  OAuth provider id (`anthropic`, `openai-codex`, `github-copilot`, `cursor`, or `xai`).
  * @param modelId   Upstream model id.
  * @param auth      Resolved OAuth access token / masking API key.
  * @param nativeBody The provider-native wire body from the entry transformer.
@@ -541,7 +585,12 @@ export function prepareOAuthNativeRequest(
   auth: NativeAnthropicAuth,
   nativeBody: any,
   streaming: boolean,
-  options?: { codexPassthrough?: boolean; apiType?: string; callerBetas?: string }
+  options?: {
+    codexPassthrough?: boolean;
+    apiType?: string;
+    callerBetas?: string;
+    convId?: string;
+  }
 ): PreparedOAuthRequest {
   if (provider === 'anthropic') {
     return prepareAnthropicOAuthRequest(modelId, auth, nativeBody, streaming, options?.callerBetas);
@@ -569,6 +618,19 @@ export function prepareOAuthNativeRequest(
       options?.apiType ?? 'chat'
     );
   }
+  if (provider === 'xai') {
+    if (auth.mode !== 'oauth') {
+      throw new Error('xAI native OAuth requires an OAuth token (apiKey mode unsupported).');
+    }
+    return prepareXaiOAuthRequest(
+      modelId,
+      auth.token,
+      nativeBody,
+      streaming,
+      options?.apiType ?? 'chat',
+      options?.convId
+    );
+  }
   if (provider === 'cursor') {
     if (auth.mode !== 'oauth') {
       throw new Error('Cursor native OAuth requires an OAuth token (apiKey mode unsupported).');
@@ -594,7 +656,8 @@ export function isNativeOAuthProvider(provider: string | undefined): boolean {
     provider === 'anthropic' ||
     provider === 'openai-codex' ||
     provider === 'github-copilot' ||
-    provider === 'cursor'
+    provider === 'cursor' ||
+    provider === 'xai'
   );
 }
 
@@ -628,6 +691,7 @@ export function nativeOAuthApiType(
 ): string | undefined {
   if (!provider) return undefined;
   if (provider === 'github-copilot') return copilotWireApiType(modelId);
+  if (provider === 'xai') return xaiWireApiType(modelId);
   return NATIVE_OAUTH_API_TYPES[provider];
 }
 
@@ -645,19 +709,10 @@ export function copilotWireApiType(modelId: string | undefined): string {
   return 'chat';
 }
 
-// ─── Generic OAuth (any pi-ai OAuth provider that isn't native) ────────────
-//
-// Anthropic/Codex/Copilot get hand-ported paths above because they need
-// something beyond "Bearer token + standard wire body": Claude Code masking,
-// ChatGPT-backend body adornment, or per-model wire-API selection against a
-// proxy base URL. Every OTHER pi-ai OAuth provider (xai, kimi-coding,
-// openrouter, and whatever pi-ai adds next — see isNativeOAuthProvider and
-// services/oauth/oauth-providers.ts) is a plain Bearer-token OAuth provider
-// speaking one of the standard wire APIs pi-ai's registry already declares
-// per model. The standard-path transformer has already built the correct
-// wire body by the time this runs — only auth and the upstream URL need to
-// be swapped from the `oauth://` placeholder for the real ones, so there is
-// no per-provider work to do here, now or for future providers.
+// --- Generic OAuth (any pi-ai OAuth provider that is not native) ---
+// Anthropic/Codex/Copilot/Cursor/xAI have hand-ported paths. Other pi-ai
+// OAuth providers (kimi-coding, openrouter, ...) use Bearer + catalog URL.
+// xAI SuperGrok is native: SuperGrok tokens do not belong on api.x.ai.
 
 /** Endpoint path suffix per plexus wire api type — mirrors each standard
  * transformer's `defaultEndpoint` (see transformers/openai.ts, responses.ts,
@@ -723,6 +778,16 @@ export async function prepareGenericOAuthDispatch(params: {
   };
 }
 
+/** Resolve an xAI model's plexus wire API type via the pi-ai catalog. */
+export function xaiWireApiType(modelId: string | undefined): string {
+  if (modelId) {
+    const model = getCatalogModel('xai', modelId);
+    const api = (model as any)?.api as string | undefined;
+    if (api && PIAI_API_TO_PLEXUS[api]) return PIAI_API_TO_PLEXUS[api];
+  }
+  return 'chat';
+}
+
 /**
  * Full async preparation for the native Anthropic dispatch. For OAuth routes,
  * resolves the token (with auto-refresh + DB write-back via OAuthAuthManager);
@@ -743,6 +808,8 @@ export async function prepareNativeOAuthDispatch(params: {
   apiType?: string;
   /** Anthropic only: the caller's raw `anthropic-beta` header, merged with REQUIRED_BETAS. */
   callerBetas?: string;
+  /** xAI sticky cache route (`x-grok-conv-id` / `prompt_cache_key`). */
+  convId?: string;
 }): Promise<PreparedOAuthRequest> {
   const { provider, modelId, nativeBody, streaming, oauthAccountId, maskingApiKey } = params;
 
@@ -765,5 +832,6 @@ export async function prepareNativeOAuthDispatch(params: {
     codexPassthrough: params.codexPassthrough === true,
     apiType: params.apiType,
     callerBetas: params.callerBetas,
+    convId: params.convId,
   });
 }

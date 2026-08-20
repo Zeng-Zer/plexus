@@ -31,6 +31,7 @@ describe('dropped OAuth providers — schema rejection', () => {
       'xai',
       'kimi-coding',
       'openrouter',
+      'cursor',
     ]) {
       const result = ProviderConfigSchema.safeParse({
         api_base_url: 'oauth://',

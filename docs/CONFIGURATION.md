@@ -153,7 +153,7 @@ Plexus supports OAuth-backed providers through pi-ai and the official Cursor SDK
 - GitHub Copilot
 - OpenAI Codex
 - OpenAI o1-pro
-- xAI (Grok / X Premium+ subscription)
+- xAI SuperGrok / X Premium+ (native Plexus hop; not pi-ai generic `api.x.ai`)
 - Kimi Code (Moonshot subscription)
 - OpenRouter
 - Cursor Subscription (Plexus-owned, via the Cursor SDK)
