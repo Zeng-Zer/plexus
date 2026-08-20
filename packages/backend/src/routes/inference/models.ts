@@ -9,6 +9,7 @@ import {
   resolvePreferredApi,
 } from '../../services/models/model-metadata-manager';
 import { getCatalogModel } from '../../services/pi-ai/catalog';
+import { findAlias } from '../../services/routing/router';
 
 let v1ModelsLastHash: string | null = null;
 let v1ModelsLastModified: string | null = null;
@@ -17,11 +18,41 @@ let openrouterModelsLastModified: string | null = null;
 
 const MODEL_CREATED_AT = Math.floor(Date.now() / 1000);
 
+function isAliasRoutable(
+  modelName: string,
+  config: ReturnType<typeof getConfig>,
+  visited = new Set<string>()
+): boolean {
+  const { alias, canonicalModel } = findAlias(config, modelName);
+  if (!alias) return false;
+  if (visited.has(canonicalModel)) return false;
+
+  const nextVisited = new Set(visited);
+  nextVisited.add(canonicalModel);
+
+  const targets = (alias.target_groups ?? []).flatMap((group) => group.targets);
+  // ponytail: empty target lists stay advertised; catalog tests and unfinished aliases rely on it
+  if (targets.length === 0) return true;
+
+  for (const target of targets) {
+    if (target.enabled === false) continue;
+    if (target.alias) {
+      if (isAliasRoutable(target.alias, config, nextVisited)) return true;
+      continue;
+    }
+    if (!target.provider || !target.model) continue;
+    const providerConfig = config.providers?.[target.provider];
+    if (providerConfig && providerConfig.enabled !== false) return true;
+  }
+  return false;
+}
+
 export async function registerModelsRoute(fastify: FastifyInstance) {
   /**
    * GET /v1/models
    * Returns a list of available model aliases configured in the database,
    * following the OpenRouter/OpenAI model list format.
+   * Aliases with no enabled routable target (target or provider disabled) are omitted.
    *
    * Metadata is resolved automatically from each alias's canonical target by
    * default. Explicit catalog links and per-field overrides remain supported.
@@ -36,95 +67,97 @@ export async function registerModelsRoute(fastify: FastifyInstance) {
     const created = MODEL_CREATED_AT;
     const hasVisionFallthrough = !!config.vision_fallthrough;
 
-    const models = Object.entries(config.models).map(([aliasId, modelConfig]) => {
-      const automaticIdentity = resolveAutomaticModelIdentity(
-        aliasId,
-        modelConfig,
-        config.providers
-      );
-      let piModelConfig = modelConfig?.pi_model;
-      const preferredApi = resolvePreferredApi(aliasId, modelConfig, config.providers);
+    const models = Object.entries(config.models)
+      .filter(([aliasId]) => isAliasRoutable(aliasId, config))
+      .map(([aliasId, modelConfig]) => {
+        const automaticIdentity = resolveAutomaticModelIdentity(
+          aliasId,
+          modelConfig,
+          config.providers
+        );
+        let piModelConfig = modelConfig?.pi_model;
+        const preferredApi = resolvePreferredApi(aliasId, modelConfig, config.providers);
 
-      // Look up pi compat options if a pi model reference is configured.
-      let piOptions: Record<string, unknown> | undefined;
-      if (!piModelConfig && automaticIdentity.provider) {
-        const inferred = getCatalogModel(automaticIdentity.provider, automaticIdentity.model);
-        if (inferred) {
-          piModelConfig = {
-            provider: automaticIdentity.provider,
-            model_id: automaticIdentity.model,
-          };
+        // Look up pi compat options if a pi model reference is configured.
+        let piOptions: Record<string, unknown> | undefined;
+        if (!piModelConfig && automaticIdentity.provider) {
+          const inferred = getCatalogModel(automaticIdentity.provider, automaticIdentity.model);
+          if (inferred) {
+            piModelConfig = {
+              provider: automaticIdentity.provider,
+              model_id: automaticIdentity.model,
+            };
+          }
         }
-      }
-      if (piModelConfig) {
-        const piModel = getCatalogModel(piModelConfig.provider, piModelConfig.model_id);
-        if (piModel?.compat && Object.keys(piModel.compat).length > 0) {
-          piOptions = piModel.compat as Record<string, unknown>;
+        if (piModelConfig) {
+          const piModel = getCatalogModel(piModelConfig.provider, piModelConfig.model_id);
+          if (piModel?.compat && Object.keys(piModel.compat).length > 0) {
+            piOptions = piModel.compat as Record<string, unknown>;
+          }
         }
-      }
 
-      const base = {
-        id: aliasId,
-        object: 'model' as const,
-        created,
-        owned_by: 'plexus',
-        ...(preferredApi !== undefined && { preferred_api: preferredApi }),
-        ...(piModelConfig && { pi_provider: piModelConfig.provider }),
-        ...(piModelConfig && { pi_model: piModelConfig.model_id }),
-        ...(piOptions !== undefined && { pi_options: piOptions }),
-      };
+        const base = {
+          id: aliasId,
+          object: 'model' as const,
+          created,
+          owned_by: 'plexus',
+          ...(preferredApi !== undefined && { preferred_api: preferredApi }),
+          ...(piModelConfig && { pi_provider: piModelConfig.provider }),
+          ...(piModelConfig && { pi_model: piModelConfig.model_id }),
+          ...(piOptions !== undefined && { pi_options: piOptions }),
+        };
 
-      const enriched = resolveModelMetadata(
-        aliasId,
-        modelConfig,
-        config.providers,
-        metadataManager
-      )?.metadata;
-      if (!enriched) {
+        const enriched = resolveModelMetadata(
+          aliasId,
+          modelConfig,
+          config.providers,
+          metadataManager
+        )?.metadata;
+        if (!enriched) {
+          if (hasVisionFallthrough && modelConfig.use_image_fallthrough) {
+            return {
+              ...base,
+              architecture: {
+                input_modalities: ['text', 'image'],
+                output_modalities: ['text'],
+              },
+            };
+          }
+          return base;
+        }
+
+        const result: Record<string, unknown> = {
+          ...base,
+          name: enriched.name,
+          ...(enriched.description !== undefined && { description: enriched.description }),
+          ...(enriched.context_length !== undefined && { context_length: enriched.context_length }),
+          ...(enriched.architecture !== undefined && { architecture: enriched.architecture }),
+          ...(enriched.pricing !== undefined && { pricing: enriched.pricing }),
+          ...(enriched.supported_parameters !== undefined && {
+            supported_parameters: enriched.supported_parameters,
+          }),
+          ...(enriched.top_provider !== undefined && { top_provider: enriched.top_provider }),
+        };
+
         if (hasVisionFallthrough && modelConfig.use_image_fallthrough) {
-          return {
-            ...base,
-            architecture: {
-              input_modalities: ['text', 'image'],
+          const arch = (result.architecture ?? {}) as Record<string, unknown>;
+          const inputModalities = (arch.input_modalities as string[] | undefined) ?? [];
+          if (!inputModalities.includes('image')) {
+            result.architecture = {
+              ...arch,
+              input_modalities: [...inputModalities, 'image'],
+            };
+          }
+          if (!arch.output_modalities) {
+            result.architecture = {
+              ...(result.architecture as Record<string, unknown>),
               output_modalities: ['text'],
-            },
-          };
+            };
+          }
         }
-        return base;
-      }
 
-      const result: Record<string, unknown> = {
-        ...base,
-        name: enriched.name,
-        ...(enriched.description !== undefined && { description: enriched.description }),
-        ...(enriched.context_length !== undefined && { context_length: enriched.context_length }),
-        ...(enriched.architecture !== undefined && { architecture: enriched.architecture }),
-        ...(enriched.pricing !== undefined && { pricing: enriched.pricing }),
-        ...(enriched.supported_parameters !== undefined && {
-          supported_parameters: enriched.supported_parameters,
-        }),
-        ...(enriched.top_provider !== undefined && { top_provider: enriched.top_provider }),
-      };
-
-      if (hasVisionFallthrough && modelConfig.use_image_fallthrough) {
-        const arch = (result.architecture ?? {}) as Record<string, unknown>;
-        const inputModalities = (arch.input_modalities as string[] | undefined) ?? [];
-        if (!inputModalities.includes('image')) {
-          result.architecture = {
-            ...arch,
-            input_modalities: [...inputModalities, 'image'],
-          };
-        }
-        if (!arch.output_modalities) {
-          result.architecture = {
-            ...(result.architecture as Record<string, unknown>),
-            output_modalities: ['text'],
-          };
-        }
-      }
-
-      return result;
-    });
+        return result;
+      });
 
     const payload = {
       object: 'list',
