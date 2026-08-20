@@ -53,9 +53,10 @@ get:
               - openai-codex
               - claude-code
               - copilot
+              - xai
               - wisdomgate
               - apertis
-            count: 13
+            count: 14
     '401':
       description: Authentication required or invalid credentials.
   operationId: getV0ManagementQuotacheckertypes

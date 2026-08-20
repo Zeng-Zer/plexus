@@ -1140,6 +1140,7 @@ export interface QuotaConfig {
     | 'nanogpt'
     | 'codex'
     | 'claude-code'
+    | 'xai'
     | 'zai'
     | 'moonshot'
     | 'minimax'

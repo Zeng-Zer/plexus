@@ -5846,10 +5846,11 @@
                     "openai-codex",
                     "claude-code",
                     "copilot",
+                    "xai",
                     "wisdomgate",
                     "apertis"
                   ],
-                  "count": 13
+                  "count": 14
                 }
               }
             }

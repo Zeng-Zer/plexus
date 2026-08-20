@@ -27,6 +27,7 @@ const getOAuthCheckerType = (oauthProvider?: string): string | null => {
     anthropic: 'claude-code',
     'claude-code': 'claude-code',
     'github-copilot': 'copilot',
+    xai: 'xai',
   };
   return map[oauthProvider] ?? null;
 };
