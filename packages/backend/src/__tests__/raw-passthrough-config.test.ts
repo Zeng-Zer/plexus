@@ -33,6 +33,18 @@ describe('raw passthrough config schemas', () => {
     ).toBe(true);
   });
 
+  test('accepts xAI SuperGrok OAuth in runtime config and PostgreSQL enum', () => {
+    expect(oauthProviderTypeEnum.enumValues).toContain('xai');
+    expect(
+      ProviderConfigSchema.safeParse({
+        api_base_url: 'oauth://',
+        api_key: 'oauth',
+        oauth_provider: 'xai',
+        oauth_account: 'personal',
+      }).success
+    ).toBe(true);
+  });
+
   test('rejects raw passthrough for OAuth providers', () => {
     const parsed = ProviderConfigSchema.safeParse({
       api_base_url: 'oauth://',

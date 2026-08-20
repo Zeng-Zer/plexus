@@ -146,6 +146,7 @@ Plexus supports OAuth-backed providers through pi-ai and the official Cursor SDK
 - OpenAI Codex
 - OpenAI o1-pro
 - Cursor Subscription
+- xAI Grok (SuperGrok / X Premium+)
 
 **Configuration:**
 - Set API Base URL to `oauth://`

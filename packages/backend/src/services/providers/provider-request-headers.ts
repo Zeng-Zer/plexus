@@ -1,5 +1,6 @@
 import type { UnifiedChatRequest } from '../../types/unified';
 import { getApiBaseType } from '../../utils/api-format';
+import { resolveXaiConvId } from '../../utils/cache-routing-headers';
 import type { RouteResult } from '../routing/router';
 
 export function setupProviderHeaders(
@@ -66,6 +67,12 @@ export function setupProviderHeaders(
       headers['x-multi-turn-session-id'] = request.cacheRoutingHeaders['x-multi-turn-session-id'];
     }
   }
+
+  const xaiConvId =
+    route.provider === 'xai' || route.config.oauth_provider === 'xai'
+      ? resolveXaiConvId(request.cacheRoutingHeaders, request.prompt_cache_key)
+      : undefined;
+  if (xaiConvId) headers['x-grok-conv-id'] = xaiConvId;
 
   if (getApiBaseType(apiType) === 'messages' && request.anthropicBeta) {
     headers['anthropic-beta'] = request.anthropicBeta;

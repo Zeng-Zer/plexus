@@ -24,7 +24,7 @@ describe('dropped OAuth providers — schema rejection', () => {
   });
 
   it('still accepts supported OAuth providers', () => {
-    for (const provider of ['anthropic', 'openai-codex', 'github-copilot']) {
+    for (const provider of ['anthropic', 'openai-codex', 'github-copilot', 'cursor', 'xai']) {
       const result = ProviderConfigSchema.safeParse({
         api_base_url: 'oauth://',
         oauth_provider: provider,

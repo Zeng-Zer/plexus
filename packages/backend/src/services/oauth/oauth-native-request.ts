@@ -74,6 +74,7 @@ export interface PreparedOAuthRequest {
 const OAUTH_PROVIDER_BASE_URLS: Record<string, string> = {
   anthropic: 'https://api.anthropic.com',
   'openai-codex': 'https://chatgpt.com/backend-api',
+  xai: 'https://api.x.ai/v1',
 };
 
 /**
@@ -524,10 +525,53 @@ function prepareCopilotOAuthRequest(
   };
 }
 
+function xaiEndpoint(apiType: string): string {
+  return apiType === 'responses' ? '/responses' : '/chat/completions';
+}
+
+function adornXaiBody(body: any, apiType: string, streaming: boolean): any {
+  if (apiType !== 'chat' || !streaming) return body;
+  const next: any = { ...(body ?? {}) };
+  const existing =
+    next.stream_options && typeof next.stream_options === 'object' ? next.stream_options : {};
+  next.stream_options = { ...existing, include_usage: existing.include_usage ?? true };
+  return next;
+}
+
+function prepareXaiOAuthRequest(
+  modelId: string,
+  token: string,
+  nativeBody: any,
+  streaming: boolean,
+  apiType: string,
+  convId?: string
+): PreparedOAuthRequest {
+  let body = adornXaiBody(nativeBody, apiType, streaming);
+  const cacheKey =
+    (typeof convId === 'string' && convId.trim()) ||
+    (typeof body?.prompt_cache_key === 'string' && body.prompt_cache_key.trim()) ||
+    '';
+  if (apiType === 'responses' && cacheKey && !body.prompt_cache_key) {
+    body = { ...body, prompt_cache_key: cacheKey };
+  }
+  const baseUrl = resolveOAuthBaseUrl('xai', modelId);
+  return {
+    url: `${baseUrl}${xaiEndpoint(apiType)}`,
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: streaming ? 'text/event-stream' : 'application/json',
+      Authorization: `Bearer ${token}`,
+      ...(cacheKey ? { 'x-grok-conv-id': cacheKey } : {}),
+    },
+    body,
+    reverseResponseFrame: (frame) => frame,
+  };
+}
+
 /**
  * Prepare a native OAuth request for the standard dispatch path.
  *
- * @param provider  OAuth provider id (`anthropic`, `openai-codex`, or `github-copilot`).
+ * @param provider  OAuth provider id (`anthropic`, `openai-codex`, `github-copilot`, `cursor`, or `xai`).
  * @param modelId   Upstream model id.
  * @param auth      Resolved OAuth access token / masking API key.
  * @param nativeBody The provider-native wire body from the entry transformer.
@@ -541,7 +585,12 @@ export function prepareOAuthNativeRequest(
   auth: NativeAnthropicAuth,
   nativeBody: any,
   streaming: boolean,
-  options?: { codexPassthrough?: boolean; apiType?: string; callerBetas?: string }
+  options?: {
+    codexPassthrough?: boolean;
+    apiType?: string;
+    callerBetas?: string;
+    convId?: string;
+  }
 ): PreparedOAuthRequest {
   if (provider === 'anthropic') {
     return prepareAnthropicOAuthRequest(modelId, auth, nativeBody, streaming, options?.callerBetas);
@@ -569,6 +618,19 @@ export function prepareOAuthNativeRequest(
       options?.apiType ?? 'chat'
     );
   }
+  if (provider === 'xai') {
+    if (auth.mode !== 'oauth') {
+      throw new Error('xAI native OAuth requires an OAuth token (apiKey mode unsupported).');
+    }
+    return prepareXaiOAuthRequest(
+      modelId,
+      auth.token,
+      nativeBody,
+      streaming,
+      options?.apiType ?? 'chat',
+      options?.convId
+    );
+  }
   if (provider === 'cursor') {
     if (auth.mode !== 'oauth') {
       throw new Error('Cursor native OAuth requires an OAuth token (apiKey mode unsupported).');
@@ -594,7 +656,8 @@ export function isNativeOAuthProvider(provider: string | undefined): boolean {
     provider === 'anthropic' ||
     provider === 'openai-codex' ||
     provider === 'github-copilot' ||
-    provider === 'cursor'
+    provider === 'cursor' ||
+    provider === 'xai'
   );
 }
 
@@ -628,6 +691,7 @@ export function nativeOAuthApiType(
 ): string | undefined {
   if (!provider) return undefined;
   if (provider === 'github-copilot') return copilotWireApiType(modelId);
+  if (provider === 'xai') return xaiWireApiType(modelId);
   return NATIVE_OAUTH_API_TYPES[provider];
 }
 
@@ -639,6 +703,16 @@ export function nativeOAuthApiType(
 export function copilotWireApiType(modelId: string | undefined): string {
   if (modelId) {
     const model = getCatalogModel('github-copilot', modelId);
+    const api = (model as any)?.api as string | undefined;
+    if (api && PIAI_API_TO_PLEXUS[api]) return PIAI_API_TO_PLEXUS[api];
+  }
+  return 'chat';
+}
+
+/** Resolve an xAI model's plexus wire API type via the pi-ai catalog. */
+export function xaiWireApiType(modelId: string | undefined): string {
+  if (modelId) {
+    const model = getCatalogModel('xai', modelId);
     const api = (model as any)?.api as string | undefined;
     if (api && PIAI_API_TO_PLEXUS[api]) return PIAI_API_TO_PLEXUS[api];
   }
@@ -665,6 +739,8 @@ export async function prepareNativeOAuthDispatch(params: {
   apiType?: string;
   /** Anthropic only: the caller's raw `anthropic-beta` header, merged with REQUIRED_BETAS. */
   callerBetas?: string;
+  /** xAI sticky cache route (`x-grok-conv-id` / `prompt_cache_key`). */
+  convId?: string;
 }): Promise<PreparedOAuthRequest> {
   const { provider, modelId, nativeBody, streaming, oauthAccountId, maskingApiKey } = params;
 
@@ -687,5 +763,6 @@ export async function prepareNativeOAuthDispatch(params: {
     codexPassthrough: params.codexPassthrough === true,
     apiType: params.apiType,
     callerBetas: params.callerBetas,
+    convId: params.convId,
   });
 }

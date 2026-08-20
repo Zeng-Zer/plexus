@@ -13,6 +13,7 @@ import {
   prepareNativeOAuthDispatch,
   type PreparedOAuthRequest,
 } from '../oauth/oauth-native-request';
+import { resolveXaiConvId } from '../../utils/cache-routing-headers';
 import {
   applyRegistryAutoCompat,
   hasCodexResponsesExtensions,
@@ -240,6 +241,17 @@ export async function buildRequestPayload(
     payload = toolStripResult.payload;
   }
 
+  // xAI Responses sticky cache: header-only clients still need body prompt_cache_key.
+  const xaiConvId = resolveXaiConvId(request.cacheRoutingHeaders, request.prompt_cache_key);
+  if (
+    xaiConvId &&
+    (route.provider === 'xai' || route.config.oauth_provider === 'xai') &&
+    getApiBaseType(targetApiType) === 'responses' &&
+    !(typeof payload?.prompt_cache_key === 'string' && payload.prompt_cache_key.trim())
+  ) {
+    payload = { ...payload, prompt_cache_key: xaiConvId };
+  }
+
   // Native OAuth (currently Anthropic): the payload above is already the correct
   // provider-native wire body (pass-through of the client's Messages body, or a
   // cross-format transform to it). Layer the CC masking/fingerprint + OAuth
@@ -268,6 +280,7 @@ export async function buildRequestPayload(
       // rather than discarded, so beta-gated client features (e.g. the advisor
       // tool) survive the gateway instead of being rejected upstream.
       callerBetas: request.anthropicBeta,
+      convId: xaiConvId,
     });
     (route as any)[NATIVE_OAUTH_STASH] = prepared;
     logger.debug(

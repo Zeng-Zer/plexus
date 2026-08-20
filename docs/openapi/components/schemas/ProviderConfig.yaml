@@ -42,6 +42,7 @@ properties:
       - openai-codex
       - github-copilot
       - cursor
+      - xai
     description: >
       OAuth provider identifier. Required when `api_base_url` uses an
       `oauth://` URI. Determines which OAuth flow is used to obtain

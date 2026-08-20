@@ -142,6 +142,31 @@ const mockGetModels = (provider: string) => {
       },
     ];
   }
+  if (provider === 'xai') {
+    return [
+      {
+        id: 'grok-4.3',
+        name: 'Grok 4.3',
+        contextWindow: 128000,
+        provider: 'xai',
+        api: 'openai-completions',
+      },
+      {
+        id: 'grok-4.6',
+        name: 'Grok 4.6',
+        contextWindow: 500000,
+        provider: 'xai',
+        api: 'openai-completions',
+      },
+      {
+        id: 'grok-4.5',
+        name: 'Grok 4.5',
+        contextWindow: 500000,
+        provider: 'xai',
+        api: 'openai-responses',
+      },
+    ];
+  }
   return [
     {
       id: 'claude-opus-4',
@@ -177,6 +202,11 @@ const mockGetModel = (provider: string, modelId: string) => {
     if (modelId.includes('claude')) api = 'anthropic-messages';
     else if (modelId === 'gpt-5.4' || modelId.includes('responses')) api = 'openai-responses';
     else api = 'openai-completions';
+  } else if (provider === 'xai') {
+    api =
+      modelId === 'grok-4.5' || modelId.includes('responses')
+        ? 'openai-responses'
+        : 'openai-completions';
   }
   return {
     id: modelId,
@@ -189,7 +219,9 @@ const mockGetModel = (provider: string, modelId: string) => {
     // their own resolvers/defaults apply (e.g. Codex → chatgpt.com backend).
     ...(provider === 'github-copilot'
       ? { baseUrl: 'https://api.individual.githubcopilot.com' }
-      : {}),
+      : provider === 'xai'
+        ? { baseUrl: 'https://api.x.ai/v1' }
+        : {}),
   };
 };
 

@@ -161,7 +161,7 @@ export class RequestManager {
         if (host.isPiAiRoute(route, targetApiType) && !nativeOAuth) {
           throw new Error(
             `OAuth provider '${route.config.oauth_provider || route.provider}' is not supported. ` +
-              `Supported OAuth providers: anthropic, openai-codex, github-copilot, cursor.`
+              `Supported OAuth providers: anthropic, openai-codex, github-copilot, cursor, xai.`
           );
         }
         // Claude-masking API-key routes are Anthropic Messages by construction
