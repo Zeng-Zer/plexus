@@ -12248,9 +12248,10 @@
                 "type": {
                   "type": "string",
                   "enum": [
-                    "strip_adaptive_thinking"
+                    "strip_adaptive_thinking",
+                    "sanitize_client_errors"
                   ],
-                  "description": "Behaviour modifier type."
+                  "description": "Behaviour modifier type. `sanitize_client_errors` replaces 5xx messages with a generic protocol-compatible error and removes Plexus request-ID headers from every error response.\n"
                 },
                 "enabled": {
                   "type": "boolean",

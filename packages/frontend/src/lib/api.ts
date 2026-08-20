@@ -390,7 +390,12 @@ export interface StripAdaptiveThinkingBehavior {
   enabled: boolean;
 }
 
-export type AliasBehavior = StripAdaptiveThinkingBehavior; // | NextBehavior | ...
+export interface SanitizeClientErrorsBehavior {
+  type: 'sanitize_client_errors';
+  enabled: boolean;
+}
+
+export type AliasBehavior = StripAdaptiveThinkingBehavior | SanitizeClientErrorsBehavior;
 
 export type CatalogMetadataSource = 'openrouter' | 'models.dev' | 'catwalk';
 export type MetadataSource = CatalogMetadataSource | 'auto' | 'disabled' | 'custom';

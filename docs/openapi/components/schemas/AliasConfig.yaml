@@ -380,7 +380,11 @@ properties:
           type: string
           enum:
             - strip_adaptive_thinking
-          description: Behaviour modifier type.
+            - sanitize_client_errors
+          description: >
+            Behaviour modifier type. `sanitize_client_errors` replaces 5xx
+            messages with a generic protocol-compatible error and removes
+            Plexus request-ID headers from every error response.
         enabled:
           type: boolean
           default: true

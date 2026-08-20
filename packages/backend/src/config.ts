@@ -904,8 +904,16 @@ const StripAdaptiveThinkingBehaviorSchema = z.object({
   enabled: z.boolean().default(true),
 });
 
+const SanitizeClientErrorsBehaviorSchema = z.object({
+  type: z.literal('sanitize_client_errors'),
+  enabled: z.boolean().default(true),
+});
+
 // Union of all known behavior schemas – extend here for future behaviors
-const ModelBehaviorSchema = z.discriminatedUnion('type', [StripAdaptiveThinkingBehaviorSchema]);
+const ModelBehaviorSchema = z.discriminatedUnion('type', [
+  StripAdaptiveThinkingBehaviorSchema,
+  SanitizeClientErrorsBehaviorSchema,
+]);
 
 // ─── Model Metadata ──────────────────────
 // Optional reference to an external model catalog entry. When configured,

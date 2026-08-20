@@ -6,6 +6,8 @@ import { Dispatcher } from '../../../services/dispatch/dispatcher';
 import { UsageStorageService } from '../../../services/observability/usage-storage';
 import { DebugManager } from '../../../services/observability/debug-manager';
 import { SelectorFactory } from '../../../services/routing/selectors/factory';
+import { logger } from '../../../utils/logger';
+import { registerSpy } from '../../../../test/test-utils';
 
 describe('Auth Middleware', () => {
   let fastify: FastifyInstance;
@@ -166,6 +168,9 @@ describe('Auth Middleware', () => {
   });
 
   it('should allow Gemini request with key query parameter', async () => {
+    const sillySpy = registerSpy(logger, 'silly');
+    sillySpy.mockClear();
+
     const response = await fastify.inject({
       method: 'POST',
       url: '/v1beta/models/gpt-4:generateContent',
@@ -180,6 +185,26 @@ describe('Auth Middleware', () => {
       },
     });
     expect(response.statusCode).toBe(200);
+    expect(JSON.stringify(sillySpy.mock.calls)).not.toContain('sk-valid-key');
+  });
+
+  it('should not log an invalid Gemini query key', async () => {
+    const errorSpy = registerSpy(logger, 'error');
+    const sillySpy = registerSpy(logger, 'silly');
+    errorSpy.mockClear();
+    sillySpy.mockClear();
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/v1beta/models/gpt-4:generateContent',
+      query: { key: 'invalid-query-key' },
+      payload: { contents: [] },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(JSON.stringify([...errorSpy.mock.calls, ...sillySpy.mock.calls])).not.toContain(
+      'invalid-query-key'
+    );
   });
 
   it('should reject Gemini request with missing key', async () => {
@@ -197,6 +222,11 @@ describe('Auth Middleware', () => {
   });
 
   it('should reject request with invalid key', async () => {
+    const errorSpy = registerSpy(logger, 'error');
+    const sillySpy = registerSpy(logger, 'silly');
+    errorSpy.mockClear();
+    sillySpy.mockClear();
+
     const response = await fastify.inject({
       method: 'POST',
       url: '/v1/chat/completions',
@@ -210,6 +240,9 @@ describe('Auth Middleware', () => {
       },
     });
     expect(response.statusCode).toBe(401);
+    const logs = JSON.stringify([...errorSpy.mock.calls, ...sillySpy.mock.calls]);
+    expect(logs).not.toContain('invalid-key');
+    expect(logs).not.toContain('sk-valid-key');
   });
 
   it('should reject a disabled key', async () => {

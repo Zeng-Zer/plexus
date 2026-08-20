@@ -1,9 +1,9 @@
 /**
  * Model Behaviors
  *
- * Applies alias-level "advanced" behaviors to an outgoing provider payload
- * before it is dispatched. Each behavior is identified by its `type` discriminant,
- * making it straightforward to add new behaviors in the future:
+ * Applies outbound alias-level "advanced" behaviors before dispatch. Behaviors
+ * owned by another lifecycle seam, such as client error sanitization, are
+ * recognized here but leave the outbound payload unchanged.
  *
  *   1. Add a new Zod schema variant in config.ts `ModelBehaviorSchema`.
  *   2. Add a corresponding `case` block in `applyBehavior` below.
@@ -54,6 +54,8 @@ function applyBehavior(
   switch (behavior.type) {
     case 'strip_adaptive_thinking':
       return applyStripAdaptiveThinking(payload, ctx);
+    case 'sanitize_client_errors':
+      return payload;
 
     // ← add new cases here as new behavior types are introduced
 

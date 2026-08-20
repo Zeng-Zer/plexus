@@ -14,6 +14,7 @@ import { registerSpeechRoute } from './speech';
 import { registerImagesRoute } from './images';
 import { registerResponsesRoute } from './responses';
 import { registerCompletionsRoute } from './completions';
+import { registerClientErrorPolicy } from './client-error-policy';
 
 export async function registerInferenceRoutes(
   fastify: FastifyInstance,
@@ -26,6 +27,7 @@ export async function registerInferenceRoutes(
 
   // Protected Routes (v1 and v1beta)
   fastify.register(async (protectedRoutes) => {
+    registerClientErrorPolicy(protectedRoutes);
     const auth = createAuthHook();
 
     protectedRoutes.addHook('onRequest', auth.onRequest);

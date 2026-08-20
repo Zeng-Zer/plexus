@@ -101,17 +101,12 @@ export function validatePlexusApiKey(
 
   const { secretPart, attributionPart } = splitApiKeyAttribution(key);
 
-  logger.silly(`Looking for secret: ${secretPart.substring(0, 15)}`);
-  logger.silly(`Available keys config: ${JSON.stringify(config.keys)}`);
-
   const entry = Object.entries(config.keys).find(
     ([_, k]) => (k as { secret: string }).secret === secretPart
   );
 
   if (!entry) {
     logger.silly(`Auth FAILED - no matching key`);
-    logger.error(`Auth FAILED - no matching key for secret: ${secretPart}`);
-    logger.error(`Available keys config: ${JSON.stringify(config.keys)}`);
     return null;
   }
 
@@ -150,7 +145,7 @@ export function createAuthHook(options: { allowQueryKey?: boolean } = {}) {
   const allowQueryKey = options.allowQueryKey !== false;
   return {
     onRequest: async (request: FastifyRequest) => {
-      logger.silly(`onRequest called: ${request.method} ${request.url}`);
+      logger.silly(`onRequest called: ${request.method} ${request.routeOptions.url}`);
 
       // Normalize Authorization header - ensure it has "Bearer " prefix
       const authHeader = request.headers.authorization;
@@ -172,17 +167,11 @@ export function createAuthHook(options: { allowQueryKey?: boolean } = {}) {
           logger.silly(`Set authorization from x-api-key/x-goog-api-key`);
         }
       }
-
-      logger.silly(
-        `Final Authorization header: ${request.headers.authorization?.substring(0, 25)}`
-      );
     },
 
     bearerAuthOptions: {
       keys: new Set([]),
       auth: (key: string, req: any) => {
-        logger.silly(`bearerAuth auth called with key: ${key.substring(0, 25)}`);
-
         const result = validatePlexusApiKey(key, req as FastifyRequest);
         if (result) {
           logger.silly(`Auth SUCCESS for key: ${result.keyName}`);

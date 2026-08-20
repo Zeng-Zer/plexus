@@ -38,7 +38,17 @@ function tryParseDirectGroup(modelName: string): { aliasName: string; groupName:
   };
 }
 
-function findAlias(config: ReturnType<typeof getConfig>, modelName: string) {
+export function findRequestedAlias(config: ReturnType<typeof getConfig>, modelName: string) {
+  const directGroup = tryParseDirectGroup(modelName);
+  if (directGroup) {
+    const resolved = findAlias(config, directGroup.aliasName);
+    if (resolved.alias?.target_groups) return resolved;
+  }
+
+  return findAlias(config, modelName);
+}
+
+export function findAlias(config: ReturnType<typeof getConfig>, modelName: string) {
   let alias = config.models?.[modelName];
   let canonicalModel = modelName;
 
