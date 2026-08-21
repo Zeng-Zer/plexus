@@ -108,3 +108,52 @@ describe('Cursor request payload bypass', () => {
     expect(result.payload).not.toHaveProperty('plexus_cursor_fast');
   });
 });
+
+describe('xAI request payload bypass', () => {
+  const xaiRoute = {
+    provider: 'xai-provider',
+    model: 'grok-4.6',
+    config: {
+      api_base_url: 'oauth://',
+      oauth_provider: 'xai',
+      oauth_account: 'personal',
+    },
+  } as any;
+
+  beforeEach(() => {
+    OAuthAuthManager.resetForTesting();
+    setConfigForTesting({ providers: {}, models: {}, keys: {} } as any);
+    registerSpy(ConfigService, 'getInstance').mockReturnValue({
+      getAllOAuthProviders: async () => [],
+    });
+    registerSpy(OAuthAuthManager.getInstance(), 'getApiKey').mockResolvedValue('xai-key');
+  });
+
+  it('passes through same-format Responses so reasoning SSE reaches the client', async () => {
+    const originalBody = {
+      model: 'grok-4.6',
+      input: [{ role: 'user', content: 'hi' }],
+      stream: true,
+    };
+    const transformer = { transformRequest: () => Promise.reject(new Error('must not transform')) };
+
+    const result = await buildRequestPayload(
+      {
+        model: 'grok-4.6',
+        messages: [],
+        stream: true,
+        incomingApiType: 'responses',
+        originalBody,
+      } as any,
+      xaiRoute,
+      transformer,
+      'responses'
+    );
+
+    expect(result.bypassTransformation).toBe(true);
+    expect(result.payload).toMatchObject({
+      model: 'grok-4.6',
+      input: originalBody.input,
+    });
+  });
+});

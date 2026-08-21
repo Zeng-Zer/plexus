@@ -92,6 +92,23 @@ describe('ImageTransformer', () => {
       expect(result.style).toBe('natural');
       expect(result.user).toBe('user_456');
     });
+
+    it('should pass through xAI Imagine fields', async () => {
+      const request = {
+        model: 'grok-imagine-image-quality',
+        prompt: 'A collage of London landmarks',
+        aspect_ratio: '16:9',
+        resolution: '1k',
+        response_format: 'b64_json' as const,
+        image: { url: 'data:image/png;base64,aaa' },
+      };
+
+      const result = await transformer.transformGenerationRequest(request);
+
+      expect(result.aspect_ratio).toBe('16:9');
+      expect(result.resolution).toBe('1k');
+      expect(result.image).toEqual({ url: 'data:image/png;base64,aaa' });
+    });
   });
 
   describe('transformGenerationResponse', () => {

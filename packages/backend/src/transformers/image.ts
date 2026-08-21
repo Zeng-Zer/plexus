@@ -19,6 +19,10 @@ export class ImageTransformer {
       quality: input.quality,
       style: input.style,
       user: input.user,
+      aspect_ratio: input.aspect_ratio,
+      resolution: input.resolution,
+      image: input.image,
+      images: input.images,
     };
   }
 
@@ -32,6 +36,10 @@ export class ImageTransformer {
       quality: request.quality,
       style: request.style,
       user: request.user,
+      aspect_ratio: request.aspect_ratio,
+      resolution: request.resolution,
+      image: request.image,
+      images: request.images,
     };
   }
 
