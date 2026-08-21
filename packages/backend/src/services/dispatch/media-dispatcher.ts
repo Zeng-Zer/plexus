@@ -17,6 +17,8 @@ import { ConcurrencyTracker } from '../runtime/concurrency-tracker';
 import { DebugManager } from '../observability/debug-manager';
 import { EmbeddingsTransformerFactory } from './embeddings-transformer-factory';
 import type { RetryAttemptRecord } from './dispatcher-types';
+import { isNativeOAuthRoute } from './request-payload-builder';
+import { prepareNativeOAuthDispatch } from '../oauth/oauth-native-request';
 
 interface MediaDispatchHost {
   resolveBaseUrl(route: RouteResult, apiType: string): string;
@@ -47,6 +49,55 @@ interface MediaDispatchHost {
   isRetryableStatus(...args: any[]): boolean;
   isRetryableNetworkError(...args: any[]): boolean;
   probeStreamingStart(...args: any[]): Promise<any>;
+}
+
+function hasImageReferences(payload: any): boolean {
+  return payload?.image != null || (Array.isArray(payload?.images) && payload.images.length > 0);
+}
+
+async function resolveImageWireRequest(
+  host: MediaDispatchHost,
+  route: RouteResult,
+  payload: any,
+  fallbackApiType: 'images' | 'images-edits',
+  formData?: FormData
+): Promise<{ url: string; headers: Record<string, string>; body: BodyInit }> {
+  if (isNativeOAuthRoute(route, 'images')) {
+    const apiType =
+      fallbackApiType === 'images-edits' || hasImageReferences(payload) ? 'images-edits' : 'images';
+    const prepared = await prepareNativeOAuthDispatch({
+      provider: (route.config.oauth_provider || route.provider) as any,
+      modelId: route.model,
+      nativeBody: payload,
+      streaming: false,
+      oauthAccountId: route.config.oauth_account?.trim(),
+      apiType,
+    });
+    return {
+      url: prepared.url,
+      headers: prepared.headers,
+      body: JSON.stringify(prepared.body),
+    };
+  }
+
+  const baseUrl = host.resolveBaseUrl(route, 'images');
+  const url = `${baseUrl}${fallbackApiType === 'images-edits' ? '/images/edits' : '/images/generations'}`;
+  const headers: Record<string, string> = {};
+  if (!formData) {
+    headers['Content-Type'] = 'application/json';
+    headers.Accept = 'application/json';
+  }
+  if (route.config.api_key) {
+    headers.Authorization = `Bearer ${route.config.api_key}`;
+  }
+  if (route.config.headers) {
+    Object.assign(headers, route.config.headers);
+  }
+  return {
+    url,
+    headers,
+    body: formData ?? JSON.stringify(payload),
+  };
 }
 
 export class MediaDispatcher {
@@ -938,22 +989,6 @@ export class MediaDispatcher {
       host.emitRoutingUpdate(request.requestId, route);
 
       try {
-        const baseUrl = host.resolveBaseUrl(route, 'images');
-        const url = `${baseUrl}/images/generations`;
-
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        };
-
-        if (route.config.api_key) {
-          headers['Authorization'] = `Bearer ${route.config.api_key}`;
-        }
-
-        if (route.config.headers) {
-          Object.assign(headers, route.config.headers);
-        }
-
         const payload = await transformer.transformGenerationRequest({
           ...request,
           model: route.model,
@@ -976,6 +1011,8 @@ export class MediaDispatcher {
           }
         }
 
+        const wire = await resolveImageWireRequest(host, route, payload, 'images');
+
         logger.info(
           `Dispatching image generation ${request.model} to ${route.provider}:${route.model}`
         );
@@ -985,10 +1022,11 @@ export class MediaDispatcher {
           DebugManager.getInstance().addTransformedRequest(request.requestId, payload);
         }
 
+        const { url, headers, body } = wire;
         const response = await fetch(url, {
           method: 'POST',
           headers,
-          body: JSON.stringify(payload),
+          body,
         });
 
         // Capture response metadata for debug logging
@@ -1186,23 +1224,32 @@ export class MediaDispatcher {
       host.emitRoutingUpdate(request.requestId, route);
 
       try {
-        const baseUrl = host.resolveBaseUrl(route, 'images');
-        const url = `${baseUrl}/images/edits`;
-
-        const headers: Record<string, string> = {};
-
-        if (route.config.api_key) {
-          headers['Authorization'] = `Bearer ${route.config.api_key}`;
+        let payload: any;
+        let formData: FormData | undefined;
+        if (isNativeOAuthRoute(route, 'images')) {
+          payload = {
+            model: route.model,
+            prompt: request.prompt,
+            n: request.n ?? 1,
+            response_format: request.response_format ?? 'b64_json',
+            image: {
+              url: `data:${request.mimeType};base64,${request.image.toString('base64')}`,
+            },
+          };
+          if (request.originalBody?.aspect_ratio) {
+            payload.aspect_ratio = request.originalBody.aspect_ratio;
+          }
+          if (request.originalBody?.resolution) {
+            payload.resolution = request.originalBody.resolution;
+          }
+        } else {
+          formData = await transformer.transformEditRequest({
+            ...request,
+            model: route.model,
+          });
         }
 
-        if (route.config.headers) {
-          Object.assign(headers, route.config.headers);
-        }
-
-        const formData = await transformer.transformEditRequest({
-          ...request,
-          model: route.model,
-        });
+        const wire = await resolveImageWireRequest(host, route, payload, 'images-edits', formData);
 
         logger.info(`Dispatching image edit ${request.model} to ${route.provider}:${route.model}`);
         logger.silly('Image Edit Request', {
@@ -1219,10 +1266,11 @@ export class MediaDispatcher {
           });
         }
 
+        const { url, headers, body } = wire;
         const response = await fetch(url, {
           method: 'POST',
           headers,
-          body: formData,
+          body,
         });
 
         // Capture response metadata for debug logging

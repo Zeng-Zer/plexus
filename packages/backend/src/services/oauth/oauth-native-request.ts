@@ -72,6 +72,8 @@ export interface PreparedOAuthRequest {
 
 /** SuperGrok session tokens belong on the Grok CLI proxy, not api.x.ai. */
 const XAI_OAUTH_BASE_URL = 'https://cli-chat-proxy.grok.com/v1';
+/** Direct Imagine still uses the public xAI API; Grok TUI does the same split. */
+const XAI_IMAGE_API_BASE_URL = 'https://api.x.ai/v1';
 
 /** Provider-level fallback base URLs for models not present in the registry. */
 const OAUTH_PROVIDER_BASE_URLS: Record<string, string> = {
@@ -86,13 +88,13 @@ const OAUTH_PROVIDER_BASE_URLS: Record<string, string> = {
  * model's `baseUrl`), then falls back to the provider-level default so custom
  * or not-yet-registered model ids still resolve. Trailing slash stripped.
  *
- * xAI OAuth is credential-routed: the pi-ai catalog points at api.x.ai (the
- * metered developer API). SuperGrok session tokens belong on the Grok CLI
- * proxy instead.
+ * xAI OAuth is credential-routed: chat/responses stay on the Grok CLI proxy.
+ * Imagine (`images` / `images-edits`) uses api.x.ai, matching Grok TUI.
  */
-function resolveOAuthBaseUrl(provider: OAuthProvider, modelId: string): string {
+function resolveOAuthBaseUrl(provider: OAuthProvider, modelId: string, apiType?: string): string {
   if (provider === 'xai') {
-    return XAI_OAUTH_BASE_URL.replace(/\/$/, '');
+    const base = isXaiImageApiType(apiType) ? XAI_IMAGE_API_BASE_URL : XAI_OAUTH_BASE_URL;
+    return base.replace(/\/$/, '');
   }
   const model = getCatalogModel(provider, modelId);
   const baseUrl = (model as any)?.baseUrl || OAUTH_PROVIDER_BASE_URLS[provider];
@@ -535,8 +537,15 @@ function prepareCopilotOAuthRequest(
   };
 }
 
+export function isXaiImageApiType(apiType?: string): boolean {
+  return apiType === 'images' || apiType === 'images-edits';
+}
+
 function xaiEndpoint(apiType: string): string {
-  return apiType === 'responses' ? '/responses' : '/chat/completions';
+  if (apiType === 'responses') return '/responses';
+  if (apiType === 'images') return '/images/generations';
+  if (apiType === 'images-edits') return '/images/edits';
+  return '/chat/completions';
 }
 
 function adornXaiBody(body: any, apiType: string, streaming: boolean): any {
@@ -564,20 +573,23 @@ function prepareXaiOAuthRequest(
   if (apiType === 'responses' && cacheKey && !body.prompt_cache_key) {
     body = { ...body, prompt_cache_key: cacheKey };
   }
-  const baseUrl = resolveOAuthBaseUrl('xai', modelId);
+  const baseUrl = resolveOAuthBaseUrl('xai', modelId, apiType);
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: streaming ? 'text/event-stream' : 'application/json',
+    Authorization: `Bearer ${token}`,
+    'x-grok-client-identifier': 'grok-shell',
+    // ponytail: pin matches current grok CLI; bump if the proxy 426s
+    'x-grok-client-version': '1.0.5',
+  };
+  if (!isXaiImageApiType(apiType)) {
+    headers['x-xai-token-auth'] = 'xai-grok-cli';
+    headers['x-grok-model-override'] = modelId;
+    if (cacheKey) headers['x-grok-conv-id'] = cacheKey;
+  }
   return {
     url: `${baseUrl}${xaiEndpoint(apiType)}`,
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: streaming ? 'text/event-stream' : 'application/json',
-      Authorization: `Bearer ${token}`,
-      'x-xai-token-auth': 'xai-grok-cli',
-      'x-grok-client-identifier': 'grok-shell',
-      // ponytail: pin matches current grok CLI; bump if the proxy 426s
-      'x-grok-client-version': '1.0.5',
-      'x-grok-model-override': modelId,
-      ...(cacheKey ? { 'x-grok-conv-id': cacheKey } : {}),
-    },
+    headers,
     body,
     reverseResponseFrame: (frame) => frame,
   };
@@ -642,7 +654,7 @@ export function prepareOAuthNativeRequest(
       auth.token,
       nativeBody,
       streaming,
-      options?.apiType ?? 'chat',
+      options?.apiType ?? xaiWireApiType(modelId),
       options?.convId
     );
   }
@@ -724,14 +736,9 @@ export function copilotWireApiType(modelId: string | undefined): string {
   return 'chat';
 }
 
-/** Resolve an xAI model's plexus wire API type via the pi-ai catalog. */
-export function xaiWireApiType(modelId: string | undefined): string {
-  if (modelId) {
-    const model = getCatalogModel('xai', modelId);
-    const api = (model as any)?.api as string | undefined;
-    if (api && PIAI_API_TO_PLEXUS[api]) return PIAI_API_TO_PLEXUS[api];
-  }
-  return 'chat';
+/** SuperGrok OAuth uses Responses. Catalog still lists grok-4.6 as completions. */
+export function xaiWireApiType(_modelId?: string): string {
+  return 'responses';
 }
 
 /**

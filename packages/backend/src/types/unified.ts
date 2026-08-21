@@ -547,6 +547,10 @@ export interface UnifiedImageGenerationRequest {
   quality?: string;
   style?: string;
   user?: string;
+  aspect_ratio?: string;
+  resolution?: string;
+  image?: unknown;
+  images?: unknown;
   // Internal tracking
   incomingApiType?: string;
   originalBody?: any;
