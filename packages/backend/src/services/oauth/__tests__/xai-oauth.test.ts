@@ -47,7 +47,11 @@ describe('xAI OAuth provider', () => {
     expect(prepared.headers.Authorization).toBe('Bearer xai-oauth-token');
     expect(prepared.headers['x-xai-token-auth']).toBe('xai-grok-cli');
     expect(prepared.headers['x-grok-client-identifier']).toBe('grok-shell');
-    expect(prepared.headers['x-grok-client-version']).toBe('1.0.5');
+    expect(prepared.headers['x-grok-client-version']).toBe('1.0.6');
+    expect(prepared.headers['x-authenticateresponse']).toBe('authenticate-response');
+    expect(prepared.headers['x-grok-client-mode']).toBe('interactive');
+    expect(prepared.headers['x-grok-session-id']).toBe('conv_abc123');
+    expect(prepared.headers['User-Agent']).toMatch(/^grok-shell\/1\.0\.6 \(/);
     expect(prepared.headers['x-grok-model-override']).toBe('grok-4.6');
     expect(prepared.headers['x-grok-conv-id']).toBe('conv_abc123');
     expect(prepared.body.stream_options).toEqual({ include_usage: true });
@@ -65,8 +69,13 @@ describe('xAI OAuth provider', () => {
 
     expect(prepared.url).toBe('https://cli-chat-proxy.grok.com/v1/responses');
     expect(prepared.body.stream_options).toBeUndefined();
+    expect(prepared.body.stream).toBeUndefined();
+    expect(prepared.body.store).toBe(false);
+    expect(prepared.body.include).toEqual(['reasoning.encrypted_content']);
     expect(prepared.body.prompt_cache_key).toBe('conv_abc123');
     expect(prepared.headers['x-grok-conv-id']).toBe('conv_abc123');
+    expect(prepared.headers['x-grok-session-id']).toBe('conv_abc123');
+    expect(prepared.headers['x-authenticateresponse']).toBe('authenticate-response');
     expect(prepared.headers['x-grok-model-override']).toBe('grok-4.5');
   });
 
@@ -82,7 +91,33 @@ describe('xAI OAuth provider', () => {
 
     expect(prepared.url).toBe('https://cli-chat-proxy.grok.com/v1/responses');
     expect(prepared.body.prompt_cache_key).toBe('conv_abc123');
+    expect(prepared.body.stream).toBe(true);
+    expect(prepared.body.store).toBe(false);
+    expect(prepared.body.include).toEqual(['reasoning.encrypted_content']);
     expect(prepared.body.stream_options).toBeUndefined();
+  });
+
+  it('forwards reasoning.effort xhigh and does not rewrite summary', () => {
+    const prepared = prepareOAuthNativeRequest(
+      'xai',
+      'grok-4.6',
+      AUTH,
+      {
+        model: 'grok-4.6',
+        input: 'hi',
+        reasoning: { effort: 'xhigh', summary: 'auto' },
+        include: ['reasoning.encrypted_content'],
+        store: false,
+        stream: true,
+      },
+      true,
+      { convId: 'conv_abc123' }
+    );
+
+    expect(prepared.body.reasoning).toEqual({ effort: 'xhigh', summary: 'auto' });
+    expect(prepared.body.include).toEqual(['reasoning.encrypted_content']);
+    expect(prepared.body.store).toBe(false);
+    expect(prepared.body.stream).toBe(true);
   });
 
   it('posts Imagine generation to api.x.ai with the SuperGrok bearer', () => {
@@ -105,6 +140,9 @@ describe('xAI OAuth provider', () => {
     expect(prepared.url).toBe('https://api.x.ai/v1/images/generations');
     expect(prepared.headers.Authorization).toBe('Bearer xai-oauth-token');
     expect(prepared.headers['x-xai-token-auth']).toBeUndefined();
+    expect(prepared.headers['x-authenticateresponse']).toBeUndefined();
+    expect(prepared.headers['x-grok-client-mode']).toBeUndefined();
+    expect(prepared.headers['User-Agent']).toBeUndefined();
     expect(prepared.headers['x-grok-model-override']).toBeUndefined();
     expect(prepared.body.prompt).toBe('a golden sunset');
     expect(prepared.body.aspect_ratio).toBe('16:9');

@@ -548,12 +548,40 @@ function xaiEndpoint(apiType: string): string {
   return '/chat/completions';
 }
 
+/** Pin to grok-shell Cargo.toml; bump if cli-chat-proxy 426s. */
+const XAI_GROK_CLI_VERSION = '1.0.6';
+const XAI_REASONING_ENCRYPTED_INCLUDE = 'reasoning.encrypted_content';
+
+function grokCliUserAgent(): string {
+  const os =
+    process.platform === 'darwin'
+      ? 'macos'
+      : process.platform === 'win32'
+        ? 'windows'
+        : process.platform;
+  const arch =
+    process.arch === 'arm64' ? 'aarch64' : process.arch === 'x64' ? 'x86_64' : process.arch;
+  return `grok-shell/${XAI_GROK_CLI_VERSION} (${os}; ${arch})`;
+}
+
 function adornXaiBody(body: any, apiType: string, streaming: boolean): any {
-  if (apiType !== 'chat' || !streaming) return body;
+  if (apiType === 'chat') {
+    if (!streaming) return body;
+    const next: any = { ...(body ?? {}) };
+    const existing =
+      next.stream_options && typeof next.stream_options === 'object' ? next.stream_options : {};
+    next.stream_options = { ...existing, include_usage: existing.include_usage ?? true };
+    return next;
+  }
+  if (apiType !== 'responses') return body;
+  // Mirror grok-cli apply_response_defaults: store false, encrypted reasoning, stream.
   const next: any = { ...(body ?? {}) };
-  const existing =
-    next.stream_options && typeof next.stream_options === 'object' ? next.stream_options : {};
-  next.stream_options = { ...existing, include_usage: existing.include_usage ?? true };
+  if (streaming) next.stream = true;
+  if (next.store == null) next.store = false;
+  const include = Array.isArray(next.include) ? next.include : [];
+  if (!include.includes(XAI_REASONING_ENCRYPTED_INCLUDE)) {
+    next.include = [...include, XAI_REASONING_ENCRYPTED_INCLUDE];
+  }
   return next;
 }
 
@@ -579,13 +607,18 @@ function prepareXaiOAuthRequest(
     Accept: streaming ? 'text/event-stream' : 'application/json',
     Authorization: `Bearer ${token}`,
     'x-grok-client-identifier': 'grok-shell',
-    // ponytail: pin matches current grok CLI; bump if the proxy 426s
-    'x-grok-client-version': '1.0.5',
+    'x-grok-client-version': XAI_GROK_CLI_VERSION,
   };
   if (!isXaiImageApiType(apiType)) {
+    headers['User-Agent'] = grokCliUserAgent();
     headers['x-xai-token-auth'] = 'xai-grok-cli';
+    headers['x-authenticateresponse'] = 'authenticate-response';
+    headers['x-grok-client-mode'] = 'interactive';
     headers['x-grok-model-override'] = modelId;
-    if (cacheKey) headers['x-grok-conv-id'] = cacheKey;
+    if (cacheKey) {
+      headers['x-grok-conv-id'] = cacheKey;
+      headers['x-grok-session-id'] = cacheKey;
+    }
   }
   return {
     url: `${baseUrl}${xaiEndpoint(apiType)}`,
