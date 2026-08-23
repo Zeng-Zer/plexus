@@ -142,8 +142,23 @@ describe('xAI OAuth provider', () => {
     expect(prepared.headers['x-grok-client-mode']).toBeUndefined();
     expect(prepared.headers['User-Agent']).toBeUndefined();
     expect(prepared.headers['x-grok-model-override']).toBeUndefined();
+    expect(prepared.body.model).toBe('grok-imagine-image-2.0');
     expect(prepared.body.prompt).toBe('a golden sunset');
     expect(prepared.body.aspect_ratio).toBe('16:9');
+  });
+
+  it('rewrites Imagine quality from the route model when the body omits model', () => {
+    const prepared = prepareOAuthNativeRequest(
+      'xai',
+      'grok-imagine-image-quality',
+      AUTH,
+      { prompt: 'a golden sunset' },
+      false,
+      { apiType: 'images' }
+    );
+
+    expect(prepared.body.model).toBe('grok-imagine-image-2.0');
+    expect(prepared.body.prompt).toBe('a golden sunset');
   });
 
   it('posts Imagine edits to api.x.ai/images/edits', () => {
@@ -162,6 +177,33 @@ describe('xAI OAuth provider', () => {
 
     expect(prepared.url).toBe('https://api.x.ai/v1/images/edits');
     expect(prepared.headers.Authorization).toBe('Bearer xai-oauth-token');
+    expect(prepared.body.model).toBe('grok-imagine-image-2.0');
     expect(prepared.body.image).toEqual({ url: 'data:image/png;base64,aaa' });
+  });
+
+  it('passes grok-imagine-image-2.0 through unchanged', () => {
+    const prepared = prepareOAuthNativeRequest(
+      'xai',
+      'grok-imagine-image-2.0',
+      AUTH,
+      { model: 'grok-imagine-image-2.0', prompt: 'a red fox' },
+      false,
+      { apiType: 'images' }
+    );
+
+    expect(prepared.body.model).toBe('grok-imagine-image-2.0');
+  });
+
+  it('does not rewrite the fast grok-imagine-image id', () => {
+    const prepared = prepareOAuthNativeRequest(
+      'xai',
+      'grok-imagine-image',
+      AUTH,
+      { model: 'grok-imagine-image', prompt: 'a red fox' },
+      false,
+      { apiType: 'images' }
+    );
+
+    expect(prepared.body.model).toBe('grok-imagine-image');
   });
 });

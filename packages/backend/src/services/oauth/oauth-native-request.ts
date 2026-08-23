@@ -541,6 +541,14 @@ export function isXaiImageApiType(apiType?: string): boolean {
   return apiType === 'images' || apiType === 'images-edits';
 }
 
+const XAI_IMAGINE_QUALITY = 'grok-imagine-image-quality';
+const XAI_IMAGINE_IMAGE_2 = 'grok-imagine-image-2.0';
+
+/** Quality Mode is Imagine Image 2.0; keep the fast `grok-imagine-image` id. */
+function mapXaiImagineModel(modelId: string): string {
+  return modelId === XAI_IMAGINE_QUALITY ? XAI_IMAGINE_IMAGE_2 : modelId;
+}
+
 function xaiEndpoint(apiType: string): string {
   if (apiType === 'responses') return '/responses';
   if (apiType === 'images') return '/images/generations';
@@ -594,6 +602,13 @@ function prepareXaiOAuthRequest(
   convId?: string
 ): PreparedOAuthRequest {
   let body = adornXaiBody(nativeBody, apiType, streaming);
+  if (isXaiImageApiType(apiType)) {
+    const requested = typeof body?.model === 'string' && body.model.trim() ? body.model : modelId;
+    const upstream = mapXaiImagineModel(requested);
+    if (body?.model !== upstream) {
+      body = { ...(body ?? {}), model: upstream };
+    }
+  }
   const cacheKey =
     (typeof convId === 'string' && convId.trim()) ||
     (typeof body?.prompt_cache_key === 'string' && body.prompt_cache_key.trim()) ||
