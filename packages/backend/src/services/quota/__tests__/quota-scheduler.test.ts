@@ -449,7 +449,7 @@ describe('QuotaScheduler maxUtilizationPercent', () => {
     await scheduler.applyCooldownsFromResult(
       {
         checkerId: 'sequential-checker',
-        checkerType: 'cursor',
+        checkerType: 'sequential',
         provider: PROVIDER,
         checkedAt: new Date().toISOString(),
         success: true,
@@ -462,7 +462,7 @@ describe('QuotaScheduler maxUtilizationPercent', () => {
     await scheduler.applyCooldownsFromResult(
       {
         checkerId: 'sequential-checker',
-        checkerType: 'cursor',
+        checkerType: 'sequential',
         provider: PROVIDER,
         checkedAt: new Date().toISOString(),
         success: true,
