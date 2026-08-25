@@ -72,7 +72,7 @@ describe('config quota checker validation', () => {
     });
   });
 
-  it('accepts a custom checker on a Cursor OAuth provider and injects OAuth account metadata', () => {
+  it('accepts cursor quota checker and injects OAuth account metadata', () => {
     const config = validateConfig(
       JSON.stringify({
         providers: {
@@ -81,7 +81,7 @@ describe('config quota checker validation', () => {
             api_key: 'oauth',
             oauth_provider: 'cursor',
             oauth_account: 'personal',
-            quota_checker: { type: 'cursor-subscription' },
+            quota_checker: { type: 'cursor' },
           },
         },
         models: {},
@@ -93,7 +93,7 @@ describe('config quota checker validation', () => {
       expect.objectContaining({
         id: 'cursor',
         provider: 'cursor',
-        type: 'cursor-subscription',
+        type: 'cursor',
         intervalMinutes: 30,
         options: expect.objectContaining({
           oauthProvider: 'cursor',

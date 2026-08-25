@@ -30,6 +30,7 @@ import { ClineQuotaConfig } from '../quota/ClineQuotaConfig';
 import { ClaudeCodeQuotaConfig } from '../quota/ClaudeCodeQuotaConfig';
 import { CustomQuotaConfig } from '../quota/CustomQuotaConfig';
 import { XaiQuotaConfig } from '../quota/XaiQuotaConfig';
+import { CursorQuotaConfig } from '../quota/CursorQuotaConfig';
 
 interface Props {
   editingProvider: Provider;
@@ -79,6 +80,7 @@ const QUOTA_CONFIG_MAP: Record<
   cline: ClineQuotaConfig,
   'claude-code': ClaudeCodeQuotaConfig,
   xai: XaiQuotaConfig,
+  cursor: CursorQuotaConfig,
 };
 
 export function ProviderQuotaEditor({

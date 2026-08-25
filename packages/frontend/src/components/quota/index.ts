@@ -18,3 +18,4 @@ export { AllowanceMeterRow } from './AllowanceMeterRow';
 export { MeterValue, formatMeterValue } from './MeterValue';
 export { getCheckerDisplayName } from './checker-presentation';
 export { XaiQuotaConfig } from './XaiQuotaConfig';
+export { CursorQuotaConfig } from './CursorQuotaConfig';

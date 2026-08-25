@@ -28,6 +28,7 @@ const getOAuthCheckerType = (oauthProvider?: string): string | null => {
     'claude-code': 'claude-code',
     'github-copilot': 'copilot',
     xai: 'xai',
+    cursor: 'cursor',
   };
   return map[oauthProvider] ?? null;
 };
@@ -157,7 +158,7 @@ export function useProviderForm() {
     editingProvider.apiBaseUrl.toLowerCase().startsWith('oauth://');
   const oauthCheckerType = isOAuthMode ? getOAuthCheckerType(editingProvider.oauthProvider) : null;
   // OAuth providers keep their built-in checker when one exists, and always
-  // allow admin-authored custom checkers (needed for Cursor, which has no builtin).
+  // allow admin-authored custom checkers.
   const selectableQuotaCheckerTypes = isOAuthMode
     ? Array.from(new Set([...(oauthCheckerType ? [oauthCheckerType] : []), ...customCheckerIds]))
     : quotaCheckerTypes;

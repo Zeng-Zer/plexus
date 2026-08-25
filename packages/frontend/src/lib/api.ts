@@ -1141,6 +1141,7 @@ export interface QuotaConfig {
     | 'codex'
     | 'claude-code'
     | 'xai'
+    | 'cursor'
     | 'zai'
     | 'moonshot'
     | 'minimax'

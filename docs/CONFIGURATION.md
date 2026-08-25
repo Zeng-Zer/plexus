@@ -166,7 +166,7 @@ Plexus supports OAuth-backed providers through pi-ai and the official Cursor SDK
 - Set OAuth Account (e.g., `work`, `personal`)
 - Set OAuth Provider if the provider key differs from pi-ai's expected ID
 
-Once configured, log in via the Admin UI to authorize Plexus. Credentials are stored encrypted when `ENCRYPTION_KEY` is set. Cursor usage meters are configured as a custom quota checker (`cursor`); see [Custom Quota Checkers](CUSTOM_QUOTA_CHECKERS.md#cursor-subscription-example). Cursor uses local Agent semantics rather than raw model inference: complete chat history is serialized into one prompt, system/developer hierarchy is flattened and is not a security boundary, and sampling fields may be ignored. Client function tools bridge through the SDK's custom MCP callbacks while Cursor's built-in filesystem, shell, web, and subagent tools stay disabled. In-flight tool continuations are memory-only and expire after five minutes. Images remain unsupported. Cursor's minted user API key expires and is not refreshable by the SDK; re-run OAuth login after expiry.
+Once configured, log in via the Admin UI to authorize Plexus. Credentials are stored encrypted when `ENCRYPTION_KEY` is set. Cursor usage meters use the built-in `cursor` quota checker (Cursor Models / Other Models, plus optional on-demand spend). Cursor uses local Agent semantics rather than raw model inference: complete chat history is serialized into one prompt, system/developer hierarchy is flattened and is not a security boundary, and sampling fields may be ignored. Client function tools bridge through the SDK's custom MCP callbacks while Cursor's built-in filesystem, shell, web, and subagent tools stay disabled. In-flight tool continuations are memory-only and expire after five minutes. Images remain unsupported. Cursor's minted user API key expires and is not refreshable by the SDK; re-run OAuth login after expiry.
 
 ### Registry-Aware Compatibility
 
@@ -434,6 +434,7 @@ Quota checkers monitor upstream provider rate limits and prevent routing to exha
 | `openai-codex` | Codex quota (OAuth) | Reads token from database |
 | `claude-code` | Claude Code quota (OAuth) | Reads token from database |
 | `xai` | SuperGrok / X Premium+ weekly credits (OAuth) | Reads token from database; polls Grok CLI billing (`creditUsagePercent`) |
+| `cursor` | Cursor Subscription usage (OAuth) | Reads token from database; reports Cursor Models / Other Models percentages, or included USD spend, plus optional on-demand |
 | `zai` | ZAI balance |
 | `moonshot` | Moonshot balance |
 | `novita` | Novita balance |

@@ -298,6 +298,7 @@ export async function loadAllCheckers(): Promise<void> {
   await import('./checkers/kimi-code-checker');
   await import('./checkers/claude-code-checker');
   await import('./checkers/copilot-checker');
+  await import('./checkers/cursor-checker');
   await import('./checkers/xai-checker');
   await import('./checkers/wisdomgate-checker');
   await import('./checkers/apertis-checker');

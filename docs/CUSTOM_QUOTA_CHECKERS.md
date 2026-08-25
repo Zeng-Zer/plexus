@@ -69,35 +69,14 @@ Leave **Request endpoint** blank to use the default above. Keep:
 
 The provider's API key is inherited automatically and is never displayed in
 the custom checker editor. For OAuth-backed providers the live token is
-resolved at check time, so a Cursor or SuperGrok provider can use a custom
+resolved at check time, so an OAuth-backed provider can use a custom
 checker without pasting the minted key into checker options.
 
-## Cursor Subscription example
-
-Cursor has no built-in checker. Create a custom checker with type
-`cursor` (this matches a provider `quota_checker.type: cursor` assignment),
-paste the body from
-[examples/cursor-quota-checker.js](examples/cursor-quota-checker.js), then
-assign it on the Cursor OAuth provider.
-
-The script exchanges the provider's user API key for a dashboard access token
-and reads included / on-demand spend from Cursor's Connect-RPC usage API.
-When Cursor reports split model percentages, those become two monthly
-allowance meters (`cursor_models`, `other_models`); otherwise a single USD
-included-spend meter is used. On-demand spend is shown only when a limit is
-set. Included and on-demand capacity are sequential: cooldown applies only
-when no usable capacity remains.
-
-Leave **Request endpoint** blank to use the default usage URL. Keep:
-
-- **Authentication header**: `Authorization`
-- **Authentication prefix**: `Bearer`
-- **Send the provider API key in this header**: enabled
-
-Optional provider options:
-
-- `endpoint` — usage URL (default `https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage`)
-- `exchangeEndpoint` — user-key exchange URL (default `https://api2.cursor.sh/auth/exchange_user_api_key`)
+Cursor Subscription has a built-in checker (`type: cursor`) that reports
+Cursor Models / Other Models percentages, included USD spend, and optional
+on-demand spend. Prefer that checker. The body in
+[examples/cursor-quota-checker.js](examples/cursor-quota-checker.js) is the
+same logic if you need a custom variant under a different type id.
 
 ## Provider request settings
 
