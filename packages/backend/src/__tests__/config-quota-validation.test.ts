@@ -72,6 +72,38 @@ describe('config quota checker validation', () => {
     });
   });
 
+  it('accepts a custom checker on a Cursor OAuth provider and injects OAuth account metadata', () => {
+    const config = validateConfig(
+      JSON.stringify({
+        providers: {
+          cursor: {
+            api_base_url: 'oauth://',
+            api_key: 'oauth',
+            oauth_provider: 'cursor',
+            oauth_account: 'personal',
+            quota_checker: { type: 'cursor-subscription' },
+          },
+        },
+        models: {},
+        keys: {},
+      })
+    );
+
+    expect(config.quotas).toEqual([
+      expect.objectContaining({
+        id: 'cursor',
+        provider: 'cursor',
+        type: 'cursor-subscription',
+        intervalMinutes: 30,
+        options: expect.objectContaining({
+          oauthProvider: 'cursor',
+          oauthAccountId: 'personal',
+        }),
+      }),
+    ]);
+    expect(config.quotas[0]?.options).not.toHaveProperty('apiKey');
+  });
+
   it('accepts xai quota checker and injects OAuth account metadata', () => {
     const config = validateConfig(
       JSON.stringify({

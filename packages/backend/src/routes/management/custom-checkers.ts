@@ -7,6 +7,7 @@ import {
   runCustomChecker,
   validateCustomCheckerCode,
 } from '../../services/quota/custom-checker-runtime';
+import { injectOAuthApiKey } from '../../services/quota/custom-checker-auth';
 
 const CustomCheckerSchema = z.object({
   id: z
@@ -136,7 +137,11 @@ export async function registerCustomCheckerRoutes(
       }
       if (provider?.oauth_provider) options.oauthProvider ??= provider.oauth_provider;
       if (provider?.oauth_account) options.oauthAccountId ??= provider.oauth_account;
-      const ctx = createMeterContext(`${id}:test`, body.data.provider, options);
+      const ctx = createMeterContext(
+        `${id}:test`,
+        body.data.provider,
+        await injectOAuthApiKey(options)
+      );
       const meters = await runCustomChecker(code, ctx);
       return reply.send({ success: true, checkerId: id, meters });
     } catch (error) {

@@ -7,6 +7,7 @@ import {
   createCustomCheckerFetch,
   runCustomChecker,
 } from './custom-checker-runtime';
+import { injectOAuthApiKey } from './custom-checker-auth';
 
 // ── Context passed to each checker's check() method ─────────────────────────
 
@@ -145,7 +146,13 @@ export async function loadCustomCheckers(): Promise<void> {
         type,
         displayName: row.displayName,
         optionsSchema: z.record(z.string(), z.any()),
-        check: (ctx) => runCustomChecker(row.code, ctx),
+        check: async (ctx) => {
+          const options = await injectOAuthApiKey(ctx.options);
+          return runCustomChecker(
+            row.code,
+            options === ctx.options ? ctx : createMeterContext(ctx.checkerId, ctx.provider, options)
+          );
+        },
       },
       'custom'
     );

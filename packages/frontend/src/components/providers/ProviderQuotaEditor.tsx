@@ -173,9 +173,13 @@ export function ProviderQuotaEditor({
         }}
       >
         {isOAuthMode && oauthCheckerType
-          ? `Only the '${oauthCheckerType}' checker is available for this OAuth provider.`
+          ? customCheckerIds.length
+            ? `The '${oauthCheckerType}' checker is the built-in for this OAuth provider. Custom checkers are also available.`
+            : `Only the '${oauthCheckerType}' checker is available for this OAuth provider.`
           : isOAuthMode
-            ? 'No quota checker is available for this OAuth provider type.'
+            ? customCheckerIds.length
+              ? 'Select a custom quota checker for this OAuth provider.'
+              : 'Create a custom quota checker to monitor this OAuth provider.'
             : selectedQuotaCheckerType
               ? 'Quota checker is active for this provider.'
               : 'Select <none> to disable provider quota checks.'}

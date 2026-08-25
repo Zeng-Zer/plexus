@@ -156,11 +156,11 @@ export function useProviderForm() {
     typeof editingProvider.apiBaseUrl === 'string' &&
     editingProvider.apiBaseUrl.toLowerCase().startsWith('oauth://');
   const oauthCheckerType = isOAuthMode ? getOAuthCheckerType(editingProvider.oauthProvider) : null;
-  const selectableQuotaCheckerTypes = oauthCheckerType
-    ? [oauthCheckerType]
-    : isOAuthMode
-      ? []
-      : quotaCheckerTypes;
+  // OAuth providers keep their built-in checker when one exists, and always
+  // allow admin-authored custom checkers (needed for Cursor, which has no builtin).
+  const selectableQuotaCheckerTypes = isOAuthMode
+    ? Array.from(new Set([...(oauthCheckerType ? [oauthCheckerType] : []), ...customCheckerIds]))
+    : quotaCheckerTypes;
   const selectedQuotaCheckerType =
     editingProvider.quotaChecker?.type &&
     (selectableQuotaCheckerTypes.includes(editingProvider.quotaChecker.type) ||
