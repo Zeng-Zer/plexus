@@ -52,6 +52,15 @@ function messageText(content: unknown): string {
     .join('');
 }
 
+const HINDSIGHT_INJECTION_PREFIXES = ['<hindsight-', '<hindsight_', '<mental_models>'] as const;
+
+/** Volatile Pi/Hindsight user-role recall and mental-model blocks. Prefix-only. */
+export function isHindsightCursorInjection(message: { role?: string; content?: unknown }): boolean {
+  if (message.role !== 'user') return false;
+  const text = messageText(message.content).trim();
+  return HINDSIGHT_INJECTION_PREFIXES.some((prefix) => text.startsWith(prefix));
+}
+
 function persistDir(): string | undefined {
   const explicit = persistDirOverride ?? process.env.CURSOR_CONVERSATION_DIR?.trim();
   if (explicit) return explicit;
@@ -137,7 +146,9 @@ function deletePersisted(storeKey: string): void {
 export function hashCursorMessagePrefix(
   messages: Array<{ role?: string; content?: unknown }>
 ): string {
-  const firstUser = messages.find((message) => message.role === 'user');
+  const firstUser = messages.find(
+    (message) => message.role === 'user' && !isHindsightCursorInjection(message)
+  );
   return sha256Hex(messageText(firstUser?.content)).slice(0, 16);
 }
 
@@ -166,7 +177,12 @@ export function fingerprintCursorHistory(
   }>
 ): string {
   const normalized = messages
-    .filter((message) => message.role !== 'system' && message.role !== 'developer')
+    .filter(
+      (message) =>
+        message.role !== 'system' &&
+        message.role !== 'developer' &&
+        !isHindsightCursorInjection(message)
+    )
     .map((message) => ({
       role: message.role ?? '',
       content: messageText(message.content),

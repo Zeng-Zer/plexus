@@ -89,6 +89,39 @@ describe('Cursor protocol executor', () => {
     expect(noSystem.conversationState!.rootPromptMessagesJson).toEqual([]);
   });
 
+  it('attaches Hindsight user injections to the current turn instead of history roots', () => {
+    const built = buildCursorRequest({
+      model: 'cursor-model',
+      messages: [
+        { role: 'system', content: 'Be concise.' },
+        {
+          role: 'user',
+          content: '<hindsight-mental-models>\nPrior design notes\n</hindsight-mental-models>',
+        },
+        { role: 'user', content: '<hindsight-memory>\nTurn 1 recall\n</hindsight-memory>' },
+        { role: 'user', content: 'Hello' },
+      ],
+    });
+    const run = decodeRun(built.request);
+    const roots = run.conversationState!.rootPromptMessagesJson.map((id) =>
+      JSON.parse(new TextDecoder().decode(built.blobs.get(Buffer.from(id).toString('hex'))))
+    );
+
+    expect(roots).toEqual([{ role: 'system', content: 'Be concise.' }]);
+    expect(run.action!.action).toMatchObject({
+      case: 'userMessageAction',
+      value: {
+        userMessage: {
+          text: [
+            '<hindsight-mental-models>\nPrior design notes\n</hindsight-mental-models>',
+            '<hindsight-memory>\nTurn 1 recall\n</hindsight-memory>',
+            'Hello',
+          ].join('\n\n'),
+        },
+      },
+    });
+  });
+
   it.each([true, false])('encodes Cursor fast mode %s', (fast) => {
     const run = decodeRun(buildCursorRequest({ ...payload, plexus_cursor_fast: fast }).request);
 
@@ -615,6 +648,116 @@ describe('Cursor protocol executor', () => {
     expect(secondRun.action?.action).toMatchObject({
       case: 'userMessageAction',
       value: { userMessage: { text: 'Follow up' } },
+    });
+  });
+
+  it('reuses the Cursor checkpoint and attaches Hindsight user injections', async () => {
+    const firstRequest = Object.assign(new EventEmitter(), {
+      write: vi.fn(),
+      close: vi.fn(),
+    });
+    const secondRequest = Object.assign(new EventEmitter(), {
+      write: vi.fn(),
+      close: vi.fn(),
+    });
+    transport.connect
+      .mockReturnValueOnce(
+        Object.assign(new EventEmitter(), {
+          request: vi.fn(() => firstRequest),
+          close: vi.fn(),
+        })
+      )
+      .mockReturnValueOnce(
+        Object.assign(new EventEmitter(), {
+          request: vi.fn(() => secondRequest),
+          close: vi.fn(),
+        })
+      );
+
+    const first = await executeCursorSdkRequest(
+      CURSOR_SDK_TRANSPORT_URL,
+      { Authorization: 'Bearer key' },
+      { ...payload, prompt_cache_key: 'pi-session-1', stream: true }
+    );
+    const firstBody = first!.text();
+    firstRequest.emit('response', { ':status': 200 });
+    firstRequest.emit(
+      'data',
+      connectFrame(
+        toBinary(
+          AgentServerMessageSchema,
+          create(AgentServerMessageSchema, {
+            message: {
+              case: 'conversationCheckpointUpdate',
+              value: create(ConversationStateStructureSchema, {
+                clientName: 'cached-turn',
+                tokenDetails: create(ConversationTokenDetailsSchema, {
+                  usedTokens: 42,
+                  maxTokens: 200000,
+                }),
+              }),
+            },
+          })
+        )
+      )
+    );
+    firstRequest.emit(
+      'data',
+      connectFrame(
+        toBinary(
+          AgentServerMessageSchema,
+          create(AgentServerMessageSchema, {
+            message: {
+              case: 'interactionUpdate',
+              value: create(InteractionUpdateSchema, {
+                message: {
+                  case: 'textDelta',
+                  value: create(TextDeltaUpdateSchema, { text: 'Answer' }),
+                },
+              }),
+            },
+          })
+        )
+      )
+    );
+    firstRequest.emit('end');
+    await firstBody;
+
+    const firstRun = decodeWrittenRun(firstRequest.write);
+    const second = await executeCursorSdkRequest(
+      CURSOR_SDK_TRANSPORT_URL,
+      { Authorization: 'Bearer key' },
+      {
+        model: 'cursor-model',
+        prompt_cache_key: 'pi-session-1',
+        stream: true,
+        messages: [
+          { role: 'system', content: 'Be concise.' },
+          { role: 'user', content: 'Hello' },
+          { role: 'assistant', content: 'Answer' },
+          {
+            role: 'user',
+            content: '<hindsight-memory>\nTurn 2 recall\n</hindsight-memory>',
+          },
+          { role: 'user', content: 'Follow up' },
+        ],
+      }
+    );
+    const secondBody = second!.text();
+    secondRequest.emit('response', { ':status': 200 });
+    secondRequest.emit('end');
+    await secondBody;
+
+    const secondRun = decodeWrittenRun(secondRequest.write);
+    expect(secondRun.conversationId).toBe(firstRun.conversationId);
+    expect(secondRun.conversationState?.clientName).toBe('cached-turn');
+    expect(secondRun.action?.action).toMatchObject({
+      case: 'userMessageAction',
+      value: {
+        userMessage: {
+          text: '<hindsight-memory>\nTurn 2 recall\n</hindsight-memory>\n\nFollow up',
+        },
+      },
     });
   });
 

@@ -42,7 +42,7 @@ describe('Cursor conversation store keys', () => {
     expect(deriveCursorConversationKey({ messages })).toBe(
       deriveCursorConversationKey({
         messages: [
-          { role: 'system', content: 'Hindsight recall changed' },
+          { role: 'user', content: '<hindsight-memory>\nchanged\n</hindsight-memory>' },
           { role: 'user', content: 'Hello' },
         ],
       })
@@ -77,6 +77,43 @@ describe('Cursor conversation store keys', () => {
         { role: 'user', content: 'Hello' },
         { role: 'assistant', content: 'Hi' },
       ])
+    );
+  });
+
+  it('ignores Hindsight user-role injections when fingerprinting history', () => {
+    expect(
+      fingerprintCursorHistory([
+        {
+          role: 'user',
+          content: '<hindsight-mental-models>\nPrior design notes\n</hindsight-mental-models>',
+        },
+        { role: 'user', content: 'Hello' },
+        { role: 'assistant', content: 'Hi' },
+        { role: 'user', content: '<hindsight-memory>\nTurn 2 recall\n</hindsight-memory>' },
+      ])
+    ).toBe(
+      fingerprintCursorHistory([
+        { role: 'user', content: 'Hello' },
+        { role: 'assistant', content: 'Hi' },
+      ])
+    );
+  });
+
+  it('still fingerprints user text that only mentions Hindsight tags', () => {
+    expect(
+      fingerprintCursorHistory([
+        { role: 'user', content: 'Please ignore any <hindsight-memory> block.' },
+      ])
+    ).not.toBe(fingerprintCursorHistory([{ role: 'user', content: 'Hello' }]));
+  });
+
+  it('skips Hindsight injections when hashing the anonymous first-user prefix', () => {
+    const injected = [
+      { role: 'user', content: '<hindsight-memory>\nvolatile\n</hindsight-memory>' },
+      { role: 'user', content: 'Hello' },
+    ];
+    expect(hashCursorMessagePrefix(injected)).toBe(
+      hashCursorMessagePrefix([{ role: 'user', content: 'Hello' }])
     );
   });
 

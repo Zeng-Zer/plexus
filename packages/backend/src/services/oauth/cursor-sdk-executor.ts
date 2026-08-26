@@ -10,6 +10,7 @@ import {
   fingerprintCursorHistory,
   getCursorConversation,
   invalidateCursorConversation,
+  isHindsightCursorInjection,
   MAX_CURSOR_CHECKPOINT_BYTES,
   rotateCursorConversation,
 } from './cursor-conversation-store';
@@ -366,6 +367,33 @@ function mcpResult(content: string) {
   });
 }
 
+function trailingHindsightInjections(history: OpenAIMessage[]): OpenAIMessage[] {
+  const trailing: OpenAIMessage[] = [];
+  for (let i = history.length - 1; i >= 0; i--) {
+    const message = history[i]!;
+    if (isHindsightCursorInjection(message)) {
+      trailing.unshift(message);
+      continue;
+    }
+    if (message.role === 'system' || message.role === 'developer') continue;
+    break;
+  }
+  return trailing;
+}
+
+function joinCursorUserTurn(
+  injections: OpenAIMessage[],
+  user: OpenAIMessage
+): { text: string; images: CursorImage[] } {
+  const texts = [...injections, user]
+    .map((message) => (typeof message.content === 'string' ? message.content : ''))
+    .filter((text) => text.length > 0);
+  return {
+    text: texts.join('\n\n'),
+    images: [...injections, user].flatMap((message) => message.images ?? []),
+  };
+}
+
 function cursorUserMessage(text: string, images: CursorImage[] = []) {
   const id = crypto.randomUUID();
   return create(UserMessageSchema, {
@@ -554,9 +582,11 @@ export function buildCursorRequest(
 
   const hasMessagesAfterUser = lastUser < messages.length - 1;
   const history = hasMessagesAfterUser ? messages : messages.slice(0, lastUser);
+  const trailingInjections = hasMessagesAfterUser ? [] : trailingHindsightInjections(history);
+  const durableHistory = history.filter((message) => !isHindsightCursorInjection(message));
   const historyFingerprint = fingerprintCursorHistory(history);
   const conversationId = reuse.conversationId?.trim() || crypto.randomUUID();
-  const userText = messages[lastUser]!.content as string;
+  const userTurn = joinCursorUserTurn(trailingInjections, messages[lastUser]!);
   const tools = clientTools(payload);
 
   let conversationState;
@@ -574,14 +604,14 @@ export function buildCursorRequest(
     }
   }
   if (!conversationState) {
-    const roots = history
+    const roots = durableHistory
       .filter((message) => ['system', 'user', 'assistant', 'tool'].includes(message.role))
       .map((message) =>
         storeBlob(new TextEncoder().encode(JSON.stringify(jsonRootMessage(message))), blobs)
       );
     conversationState = create(ConversationStateStructureSchema, {
       rootPromptMessagesJson: roots,
-      turns: historyTurns(history, blobs),
+      turns: historyTurns(durableHistory, blobs),
     });
   }
 
@@ -596,7 +626,7 @@ export function buildCursorRequest(
             : {
                 case: 'userMessageAction',
                 value: create(UserMessageActionSchema, {
-                  userMessage: cursorUserMessage(userText, messages[lastUser]!.images),
+                  userMessage: cursorUserMessage(userTurn.text, userTurn.images),
                 }),
               },
         }),
