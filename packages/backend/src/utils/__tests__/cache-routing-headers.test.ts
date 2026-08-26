@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { getCacheRoutingHeaders, resolveXaiConvId } from '../cache-routing-headers';
+import {
+  getCacheRoutingHeaders,
+  resolveCursorConvId,
+  resolveXaiConvId,
+} from '../cache-routing-headers';
 
 describe('getCacheRoutingHeaders', () => {
   test('extracts session affinity headers from an incoming request', () => {
@@ -52,5 +56,19 @@ describe('resolveXaiConvId', () => {
     expect(resolveXaiConvId({ session_id: 'session-1' })).toBe('session-1');
     expect(resolveXaiConvId({ 'x-session-id': ' xs-1 ' })).toBe('xs-1');
     expect(resolveXaiConvId({})).toBeUndefined();
+  });
+});
+
+describe('resolveCursorConvId', () => {
+  test('prefers prompt_cache_key over session headers', () => {
+    expect(
+      resolveCursorConvId({ session_id: 'session-1', 'x-session-id': 'xs-1' }, 'prompt-1')
+    ).toBe('prompt-1');
+  });
+
+  test('falls back to session headers', () => {
+    expect(resolveCursorConvId({ session_id: 'session-1' })).toBe('session-1');
+    expect(resolveCursorConvId({ 'x-multi-turn-session-id': ' roll-1 ' })).toBe('roll-1');
+    expect(resolveCursorConvId({})).toBeUndefined();
   });
 });

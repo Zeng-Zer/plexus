@@ -825,6 +825,46 @@ describe('resolveModelMetadata', () => {
     expect(resolved?.metadata.pricing).toBeUndefined();
   });
 
+  test('fills Cursor-native heuristic windows at 200k', () => {
+    ModelMetadataManager.resetForTesting();
+    const modelConfig = {
+      target_groups: [
+        {
+          name: 'default',
+          selector: 'random',
+          targets: [{ provider: 'cursor', model: 'composer-2.5' }],
+        },
+      ],
+    } as unknown as ModelConfig;
+
+    const resolved = resolveModelMetadata('composer-2.5', modelConfig, {
+      cursor: { oauth_provider: 'cursor' } as ProviderConfig,
+    });
+
+    expect(resolved?.source).toBe('heuristic');
+    expect(resolved?.metadata.context_length).toBe(200000);
+  });
+
+  test('fills Cursor Grok 4.6 heuristic windows at 500k', () => {
+    ModelMetadataManager.resetForTesting();
+    const modelConfig = {
+      target_groups: [
+        {
+          name: 'default',
+          selector: 'random',
+          targets: [{ provider: 'cursor', model: 'grok-4.6' }],
+        },
+      ],
+    } as unknown as ModelConfig;
+
+    const resolved = resolveModelMetadata('grok-4.6', modelConfig, {
+      cursor: { oauth_provider: 'cursor' } as ProviderConfig,
+    });
+
+    expect(resolved?.source).toBe('heuristic');
+    expect(resolved?.metadata.context_length).toBe(500000);
+  });
+
   test('normalizes Pi provider IDs to catalog vendors', async () => {
     ModelMetadataManager.resetForTesting();
     const manager = ModelMetadataManager.getInstance();

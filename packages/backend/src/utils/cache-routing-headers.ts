@@ -44,3 +44,21 @@ export function resolveXaiConvId(
   }
   return undefined;
 }
+
+/** Sticky Cursor conversation key: prompt_cache_key, then session headers. */
+export function resolveCursorConvId(
+  cacheRouting?: CacheRoutingHeaders,
+  promptCacheKey?: string
+): string | undefined {
+  for (const value of [
+    promptCacheKey,
+    cacheRouting?.session_id,
+    cacheRouting?.['x-session-id'],
+    cacheRouting?.['x-session-affinity'],
+    cacheRouting?.['x-multi-turn-session-id'],
+    cacheRouting?.['x-prompt-cache-isolation-key'],
+  ]) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}

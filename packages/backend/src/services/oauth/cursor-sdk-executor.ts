@@ -2,6 +2,17 @@ import { create, fromBinary, fromJson, toBinary, toJson, type JsonValue } from '
 import { ValueSchema } from '@bufbuild/protobuf/wkt';
 import { createHash } from 'node:crypto';
 import http2 from 'node:http2';
+import { logger } from '../../utils/logger';
+import {
+  commitCursorConversation,
+  cursorConversationStoreKey,
+  deriveCursorConversationKey,
+  fingerprintCursorHistory,
+  getCursorConversation,
+  invalidateCursorConversation,
+  MAX_CURSOR_CHECKPOINT_BYTES,
+  rotateCursorConversation,
+} from './cursor-conversation-store';
 import {
   AgentClientMessageSchema,
   AgentConversationTurnStructureSchema,
@@ -137,6 +148,18 @@ interface CursorRunSession {
   transport?: CursorTransport;
   closed: boolean;
   closeError?: unknown;
+  storeKey?: string;
+  conversationId?: string;
+  requestMessages?: OpenAIMessage[];
+  latestCheckpoint?: Uint8Array;
+  assistantText?: string;
+  assistantToolCalls?: OpenAIToolCall[];
+}
+
+export interface CursorRequestReuse {
+  conversationId?: string;
+  checkpoint?: Uint8Array | null;
+  existingBlobs?: Map<string, Uint8Array>;
 }
 
 interface CursorTransport {
@@ -507,10 +530,16 @@ function forcedToolChoice(payload: any): boolean {
   );
 }
 
-export function buildCursorRequest(payload: any): {
+export function buildCursorRequest(
+  payload: any,
+  reuse: CursorRequestReuse = {}
+): {
   request: Uint8Array;
   blobs: Map<string, Uint8Array>;
   tools: McpToolDefinition[];
+  conversationId: string;
+  reusedCheckpoint: boolean;
+  historyFingerprint: string;
 } {
   if (
     payload?.plexus_cursor_fast !== undefined &&
@@ -519,28 +548,48 @@ export function buildCursorRequest(payload: any): {
     throw new Error('plexus_cursor_fast must be a boolean.');
   }
   const messages = normalizeCursorMessages(payload);
-  const blobs = new Map<string, Uint8Array>();
+  const blobs = new Map<string, Uint8Array>(reuse.existingBlobs ?? []);
   const lastUser = messages.findLastIndex((message) => message.role === 'user');
   if (lastUser < 0) throw new Error('Cursor requires a user message.');
 
   const hasMessagesAfterUser = lastUser < messages.length - 1;
   const history = hasMessagesAfterUser ? messages : messages.slice(0, lastUser);
-  const roots = history
-    .filter((message) => ['system', 'user', 'assistant', 'tool'].includes(message.role))
-    .map((message) =>
-      storeBlob(new TextEncoder().encode(JSON.stringify(jsonRootMessage(message))), blobs)
-    );
-  const turns = historyTurns(history, blobs);
+  const historyFingerprint = fingerprintCursorHistory(history);
+  const conversationId = reuse.conversationId?.trim() || crypto.randomUUID();
   const userText = messages[lastUser]!.content as string;
   const tools = clientTools(payload);
+
+  let conversationState;
+  let reusedCheckpoint = false;
+  if (!hasMessagesAfterUser && reuse.checkpoint && reuse.checkpoint.byteLength > 0) {
+    if (reuse.checkpoint.byteLength > MAX_CURSOR_CHECKPOINT_BYTES) {
+      conversationState = undefined;
+    } else {
+      try {
+        conversationState = fromBinary(ConversationStateStructureSchema, reuse.checkpoint);
+        reusedCheckpoint = true;
+      } catch {
+        conversationState = undefined;
+      }
+    }
+  }
+  if (!conversationState) {
+    const roots = history
+      .filter((message) => ['system', 'user', 'assistant', 'tool'].includes(message.role))
+      .map((message) =>
+        storeBlob(new TextEncoder().encode(JSON.stringify(jsonRootMessage(message))), blobs)
+      );
+    conversationState = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: roots,
+      turns: historyTurns(history, blobs),
+    });
+  }
+
   const request = create(AgentClientMessageSchema, {
     message: {
       case: 'runRequest',
       value: create(AgentRunRequestSchema, {
-        conversationState: create(ConversationStateStructureSchema, {
-          rootPromptMessagesJson: roots,
-          turns,
-        }),
+        conversationState,
         action: create(ConversationActionSchema, {
           action: hasMessagesAfterUser
             ? { case: 'resumeAction', value: create(ResumeActionSchema, {}) }
@@ -564,11 +613,18 @@ export function buildCursorRequest(payload: any): {
               : [],
         }),
         mcpTools: create(McpToolsSchema, { mcpTools: tools }),
-        conversationId: crypto.randomUUID(),
+        conversationId,
       }),
     },
   });
-  return { request: toBinary(AgentClientMessageSchema, request), blobs, tools };
+  return {
+    request: toBinary(AgentClientMessageSchema, request),
+    blobs,
+    tools,
+    conversationId,
+    reusedCheckpoint,
+    historyFingerprint,
+  };
 }
 
 function frame(data: Uint8Array): Buffer {
@@ -605,8 +661,27 @@ async function nextEvent(session: CursorRunSession, signal?: AbortSignal): Promi
   return session.events[session.cursor++]!;
 }
 
+function commitCompletedConversation(session: CursorRunSession): void {
+  if (!session.storeKey || !session.conversationId || !session.requestMessages) return;
+  if (session.pending.size > 0) return;
+  commitCursorConversation(session.storeKey, {
+    conversationId: session.conversationId,
+    checkpoint: session.latestCheckpoint ?? null,
+    blobs: sessionBlobs.get(session) ?? new Map(),
+    historyFingerprint: fingerprintCursorHistory([
+      ...session.requestMessages,
+      {
+        role: 'assistant',
+        content: session.assistantText ?? '',
+        ...(session.assistantToolCalls?.length ? { tool_calls: session.assistantToolCalls } : {}),
+      },
+    ]),
+  });
+}
+
 function closeSession(session: CursorRunSession, error?: unknown): void {
   if (session.closed) return;
+  if (!error) commitCompletedConversation(session);
   session.closed = true;
   session.closeError = error;
   for (const [id, pending] of session.pending) {
@@ -641,6 +716,12 @@ function sendKvResponse(session: CursorRunSession, message: any): void {
             value: create(SetBlobResultSchema, {}),
           },
   });
+  if (message.message.case === 'getBlobArgs') {
+    const blobId = Buffer.from(value.blobId).toString('hex');
+    if (!sessionBlobs.get(session)?.has(blobId)) {
+      invalidateCursorConversation(session.storeKey);
+    }
+  }
   if (message.message.case === 'setBlobArgs') {
     sessionBlobs.get(session)?.set(Buffer.from(value.blobId).toString('hex'), value.blobData);
   }
@@ -946,6 +1027,7 @@ function processServerMessage(session: CursorRunSession, message: AgentServerMes
     case 'interactionUpdate': {
       const update = message.message.value.message;
       if (update.case === 'textDelta' && update.value.text) {
+        session.assistantText = (session.assistantText ?? '') + update.value.text;
         pushEvent(session, { type: 'delta', delta: { content: update.value.text } });
       } else if (update.case === 'thinkingDelta' && update.value.text) {
         pushEvent(session, {
@@ -958,8 +1040,13 @@ function processServerMessage(session: CursorRunSession, message: AgentServerMes
       break;
     }
     case 'conversationCheckpointUpdate': {
-      const used = message.message.value.tokenDetails?.usedTokens;
+      const state = message.message.value;
+      const used = state.tokenDetails?.usedTokens;
       if (used != null) sessionUsage.get(session)!.totalTokens = used;
+      const checkpoint = toBinary(ConversationStateStructureSchema, state);
+      if (checkpoint.byteLength <= MAX_CURSOR_CHECKPOINT_BYTES) {
+        session.latestCheckpoint = checkpoint;
+      }
       break;
     }
     case 'kvServerMessage':
@@ -1279,6 +1366,9 @@ async function resumeCursorRequest(
   if (session.apiKey !== apiKey || session.model !== payload.model) {
     return unsupported('Cursor tool continuation does not match this account or model.');
   }
+  session.requestMessages = normalizeCursorMessages(payload);
+  session.assistantText = '';
+  session.assistantToolCalls = undefined;
   for (const message of trailing) {
     const pending = session.pending.get(message.tool_call_id!);
     if (!pending) continue;
@@ -1306,9 +1396,43 @@ export async function executeCursorSdkRequest(
   const resumed = await resumeCursorRequest(apiKey, payload, signal);
   if (resumed) return resumed;
 
+  const conversationKey = deriveCursorConversationKey(payload);
+  const storeKey = cursorConversationStoreKey(apiKey, conversationKey);
+  const stored = getCursorConversation(storeKey);
+  let conversationId = stored?.conversationId ?? crypto.randomUUID();
+  let checkpoint = stored?.checkpoint ?? null;
+  let existingBlobs = stored?.blobs;
+
   let built;
   try {
-    built = buildCursorRequest(payload);
+    const messages = normalizeCursorMessages(payload);
+    const lastUser = messages.findLastIndex((message) => message.role === 'user');
+    const hasMessagesAfterUser = lastUser >= 0 && lastUser < messages.length - 1;
+    const historyFingerprint = fingerprintCursorHistory(
+      lastUser >= 0 && !hasMessagesAfterUser ? messages.slice(0, lastUser) : messages
+    );
+    const fingerprintMatches =
+      !!stored?.historyFingerprint && stored.historyFingerprint === historyFingerprint;
+    const canReuseCheckpoint = !hasMessagesAfterUser && !!checkpoint && fingerprintMatches;
+    if (stored && !hasMessagesAfterUser && stored.historyFingerprint && !fingerprintMatches) {
+      conversationId = rotateCursorConversation(storeKey);
+      checkpoint = null;
+      existingBlobs = undefined;
+      logger.debug('Cursor conversation rotated after history rewrite', {
+        conversationKey,
+        conversationId,
+      });
+    } else if (canReuseCheckpoint) {
+      logger.debug('Cursor conversation reusing checkpoint', {
+        conversationKey,
+        conversationId,
+      });
+    }
+    built = buildCursorRequest(payload, {
+      conversationId,
+      checkpoint: canReuseCheckpoint ? checkpoint : null,
+      existingBlobs,
+    });
   } catch (error) {
     return unsupported(error instanceof Error ? error.message : String(error));
   }
@@ -1337,6 +1461,9 @@ export async function executeCursorSdkRequest(
     cursor: 0,
     pending: new Map(),
     closed: false,
+    storeKey,
+    conversationId: built.conversationId,
+    requestMessages: normalizeCursorMessages(payload),
   };
   sessionBlobs.set(session, built.blobs);
   sessionTools.set(session, built.tools);

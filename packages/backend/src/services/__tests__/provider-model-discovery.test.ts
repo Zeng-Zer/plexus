@@ -80,14 +80,28 @@ describe('provider model discovery', () => {
     const getApiKey = registerSpy(OAuthAuthManager.getInstance(), 'getApiKey').mockResolvedValue(
       'cursor-key'
     );
-    cursorSdk.list.mockResolvedValue([{ id: 'cursor-model', displayName: 'Cursor Model' }]);
+    cursorSdk.list.mockResolvedValue([
+      { id: 'composer-2.5', displayName: 'Composer 2.5' },
+      { id: 'grok-4.6', displayName: 'Grok 4.6' },
+      { id: 'gpt-4o', displayName: 'GPT-4o', contextWindow: 128_000 },
+    ]);
 
     await expect(getOAuthProviderModels('cursor', 'work')).resolves.toEqual([
       expect.objectContaining({
-        id: 'cursor-model',
-        name: 'Cursor Model',
-        context_length: 128_000,
+        id: 'composer-2.5',
+        name: 'Composer 2.5',
+        context_length: 200_000,
         pricing: { prompt: '0', completion: '0' },
+      }),
+      expect.objectContaining({
+        id: 'grok-4.6',
+        name: 'Grok 4.6',
+        context_length: 500_000,
+      }),
+      expect.objectContaining({
+        id: 'gpt-4o',
+        name: 'GPT-4o',
+        context_length: 128_000,
       }),
     ]);
     expect(getApiKey).toHaveBeenCalledWith('cursor', 'work');

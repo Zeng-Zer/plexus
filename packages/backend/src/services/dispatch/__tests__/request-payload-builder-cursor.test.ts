@@ -84,6 +84,27 @@ describe('Cursor request payload bypass', () => {
     }
   );
 
+  it('injects prompt_cache_key from session routing headers', async () => {
+    const originalBody = {
+      model: 'alias',
+      messages: [{ role: 'user', content: 'hello' }],
+    };
+    const result = await buildRequestPayload(
+      {
+        model: 'alias',
+        messages: originalBody.messages,
+        incomingApiType: 'chat',
+        originalBody,
+        cacheRoutingHeaders: { session_id: 'pi-session-1' },
+      } as any,
+      route,
+      { transformRequest: () => Promise.reject(new Error('must not transform')) },
+      'chat'
+    );
+
+    expect(result.payload.prompt_cache_key).toBe('pi-session-1');
+  });
+
   it('does not forward the Cursor flag to another provider', async () => {
     const result = await buildRequestPayload(
       {

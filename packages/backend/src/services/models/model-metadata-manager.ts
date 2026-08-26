@@ -5,6 +5,7 @@ import type {
   ModelProviderConfig,
   ProviderConfig,
 } from '../../config';
+import { isCursorNativeModelId, resolveCursorContextLength } from '../oauth/cursor-model-windows';
 
 type MetadataSourceId = 'openrouter' | 'models.dev' | 'catwalk';
 
@@ -962,6 +963,7 @@ function getProviderModelConfig(
 function inferProviderFromModel(model: string): string | undefined {
   const normalized = (model.split('/').at(-1) ?? model).toLowerCase();
   if (normalized.includes('claude')) return 'anthropic';
+  if (normalized.includes('grok')) return 'xai';
   if (/^(gpt|o[134](?:-|$)|text-embedding|dall-e)/.test(normalized)) return 'openai';
   if (normalized.includes('gemini') || normalized.includes('imagen')) return 'google';
   if (normalized.includes('mistral') || normalized.includes('codestral')) return 'mistralai';
@@ -1024,6 +1026,37 @@ export function resolveAutomaticModelIdentity(
   return { provider: inferProviderFromModel(aliasId), model: aliasId, basis: 'alias' };
 }
 
+function isCursorAlias(
+  modelConfig: ModelConfig,
+  providers: Record<string, ProviderConfig>
+): boolean {
+  const groups = modelConfig.target_groups ?? [];
+  const legacy =
+    (modelConfig as { targets?: Array<{ enabled?: boolean; provider?: string }> }).targets ?? [];
+  return [...groups.flatMap((group) => group.targets), ...legacy].some((target) => {
+    if (target.enabled === false || !target.provider) return false;
+    return providers[target.provider]?.oauth_provider === 'cursor';
+  });
+}
+
+function applyCursorContextFallback(
+  resolved: ResolvedModelMetadata,
+  modelConfig: ModelConfig,
+  providers: Record<string, ProviderConfig>
+): ResolvedModelMetadata {
+  if (resolved.metadata.context_length && resolved.metadata.context_length > 0) return resolved;
+  if (!isCursorAlias(modelConfig, providers) && !isCursorNativeModelId(resolved.metadata.id)) {
+    return resolved;
+  }
+  return {
+    ...resolved,
+    metadata: {
+      ...resolved.metadata,
+      context_length: resolveCursorContextLength(resolved.metadata.id),
+    },
+  };
+}
+
 export function resolveModelMetadata(
   aliasId: string,
   modelConfig: ModelConfig,
@@ -1033,49 +1066,50 @@ export function resolveModelMetadata(
   const configured = modelConfig.metadata;
   if (configured?.source === 'disabled') return undefined;
 
+  let resolved: ResolvedModelMetadata | undefined;
   if (configured?.source === 'custom') {
     const metadata = mergeOverrides(undefined, configured.overrides);
-    return metadata
+    resolved = metadata
       ? { metadata: applyConfiguredModelType(metadata, modelConfig.type), source: 'heuristic' }
       : undefined;
-  }
-
-  if (
+  } else if (
     configured?.source === 'openrouter' ||
     configured?.source === 'models.dev' ||
     configured?.source === 'catwalk'
   ) {
     const catalog = manager.getMetadata(configured.source, configured.source_path);
     const metadata = catalog ? mergeOverrides(catalog, configured.overrides) : undefined;
-    return metadata
+    resolved = metadata
       ? {
           metadata: applyConfiguredModelType(metadata, modelConfig.type),
           source: configured.source,
           sourcePath: configured.source_path,
         }
       : undefined;
-  }
-
-  const identity = resolveAutomaticModelIdentity(aliasId, modelConfig, providers);
-  const exact = identity.provider
-    ? manager.findExactMetadata(identity.provider, identity.model)
-    : undefined;
-  if (exact) {
-    const metadata = mergeOverrides(exact.metadata, configured?.overrides);
-    return metadata
-      ? { ...exact, metadata: applyConfiguredModelType(metadata, modelConfig.type) }
+  } else {
+    const identity = resolveAutomaticModelIdentity(aliasId, modelConfig, providers);
+    const exact = identity.provider
+      ? manager.findExactMetadata(identity.provider, identity.model)
       : undefined;
+    if (exact) {
+      const metadata = mergeOverrides(exact.metadata, configured?.overrides);
+      resolved = metadata
+        ? { ...exact, metadata: applyConfiguredModelType(metadata, modelConfig.type) }
+        : undefined;
+    } else {
+      const heuristic: NormalizedModelMetadata = {
+        id: identity.model,
+        name: humanizeModelName(identity.model),
+        architecture: inferArchitecture(identity.model, modelConfig.type),
+      };
+      const metadata = mergeOverrides(heuristic, configured?.overrides);
+      resolved = metadata
+        ? { metadata: applyConfiguredModelType(metadata, modelConfig.type), source: 'heuristic' }
+        : undefined;
+    }
   }
 
-  const heuristic: NormalizedModelMetadata = {
-    id: identity.model,
-    name: humanizeModelName(identity.model),
-    architecture: inferArchitecture(identity.model, modelConfig.type),
-  };
-  const metadata = mergeOverrides(heuristic, configured?.overrides);
-  return metadata
-    ? { metadata: applyConfiguredModelType(metadata, modelConfig.type), source: 'heuristic' }
-    : undefined;
+  return resolved ? applyCursorContextFallback(resolved, modelConfig, providers) : undefined;
 }
 
 export function resolvePreferredApi(

@@ -1,6 +1,7 @@
 import { getCatalogModels } from '../pi-ai/catalog';
 import { getProviderTypes, type ProviderConfig } from '../../config';
 import { logger } from '../../utils/logger';
+import { resolveCursorContextLength } from '../oauth/cursor-model-windows';
 import { OAuthAuthManager } from '../oauth/oauth-auth-manager';
 
 export interface DiscoveredModel {
@@ -133,7 +134,7 @@ export async function getOAuthProviderModels(
       name: model.displayName || model.id,
       object: 'model',
       owned_by: 'cursor',
-      context_length: 128_000,
+      context_length: resolveCursorContextLength(model.id, model),
       pricing: { prompt: '0', completion: '0' },
       description: model.description,
     }));

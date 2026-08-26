@@ -15,7 +15,8 @@ Plexus stores all configuration in the database and manages it via the **Admin U
 | `ADMIN_KEY` | Password for admin dashboard and management API. Server refuses to start if unset. | Yes |
 | `DATABASE_URL` | Connection string. Supports `sqlite://` and `postgres://` URIs. | No |
 | `ENCRYPTION_KEY` | 32-byte key for encrypting sensitive data at rest. Generated via: `openssl rand -hex 32` | No |
-| `DATA_DIR` | Directory for SQLite database. | No |
+| `DATA_DIR` | Directory for SQLite database and Cursor conversation checkpoints. | No |
+| `CURSOR_CONVERSATION_DIR` | Override directory for persisted Cursor checkpoints. Defaults to `$DATA_DIR/cursor-conversations`. | No |
 | `LOG_LEVEL` | Verbosity: `error`, `warn`, `info`, `debug`, `silly` | No |
 | `PORT` | HTTP server port (defaults to 4000; auto-derived from git worktree name when running `bun run dev`). | No |
 | `HOST` | Address to bind to. | No |
@@ -166,7 +167,7 @@ Plexus supports OAuth-backed providers through pi-ai and the official Cursor SDK
 - Set OAuth Account (e.g., `work`, `personal`)
 - Set OAuth Provider if the provider key differs from pi-ai's expected ID
 
-Once configured, log in via the Admin UI to authorize Plexus. Credentials are stored encrypted when `ENCRYPTION_KEY` is set. Cursor usage meters use the built-in `cursor` quota checker (Cursor Models / Other Models, plus optional on-demand spend). Cursor uses local Agent semantics rather than raw model inference: complete chat history is serialized into one prompt, system/developer hierarchy is flattened and is not a security boundary, and sampling fields may be ignored. Client function tools bridge through the SDK's custom MCP callbacks while Cursor's built-in filesystem, shell, web, and subagent tools stay disabled. In-flight tool continuations are memory-only and expire after five minutes. Images remain unsupported. Cursor's minted user API key expires and is not refreshable by the SDK; re-run OAuth login after expiry.
+Once configured, log in via the Admin UI to authorize Plexus. Credentials are stored encrypted when `ENCRYPTION_KEY` is set. Cursor usage meters use the built-in `cursor` quota checker (Cursor Models / Other Models, plus optional on-demand spend). Cursor uses local Agent semantics rather than raw model inference: later turns reuse a conversation id and server checkpoint when `prompt_cache_key` or a session header matches and user/assistant/tool history has not been rewritten. Volatile system/developer text (including Hindsight recall) does not rotate the conversation. Otherwise chat history is rebuilt into one prompt. Discovered Cursor windows use the published model size when known (500k for Grok 4.5/4.6), otherwise 200k tokens (128k for legacy GPT-4o-class IDs) unless the SDK reports a window; alias metadata overrides still win. System/developer hierarchy is flattened and is not a security boundary, and sampling fields may be ignored. Client function tools bridge through the SDK's custom MCP callbacks while Cursor's built-in filesystem, shell, web, and subagent tools stay disabled. Conversation checkpoints persist under `DATA_DIR/cursor-conversations` (or `CURSOR_CONVERSATION_DIR`) and expire after 24 hours of inactivity. Cursor's minted user API key expires and is not refreshable by the SDK; re-run OAuth login after expiry.
 
 ### Registry-Aware Compatibility
 

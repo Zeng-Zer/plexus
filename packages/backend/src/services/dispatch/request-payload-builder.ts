@@ -14,7 +14,7 @@ import {
   prepareNativeOAuthDispatch,
   type PreparedOAuthRequest,
 } from '../oauth/oauth-native-request';
-import { resolveXaiConvId } from '../../utils/cache-routing-headers';
+import { resolveCursorConvId, resolveXaiConvId } from '../../utils/cache-routing-headers';
 import {
   applyRegistryAutoCompat,
   hasCodexResponsesExtensions,
@@ -261,6 +261,16 @@ export async function buildRequestPayload(
     !(typeof payload?.prompt_cache_key === 'string' && payload.prompt_cache_key.trim())
   ) {
     payload = { ...payload, prompt_cache_key: xaiConvId };
+  }
+
+  // Cursor conversation reuse: same sticky key the executor stores checkpoints under.
+  const cursorConvId = resolveCursorConvId(request.cacheRoutingHeaders, request.prompt_cache_key);
+  if (
+    cursorConvId &&
+    cursorNative &&
+    !(typeof payload?.prompt_cache_key === 'string' && payload.prompt_cache_key.trim())
+  ) {
+    payload = { ...payload, prompt_cache_key: cursorConvId };
   }
 
   // Native OAuth (currently Anthropic): the payload above is already the correct
