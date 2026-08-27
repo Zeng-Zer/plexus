@@ -110,6 +110,7 @@ fastify.register(cors, {
     'x-api-key',
     'x-admin-key',
     'x-goog-api-key',
+    'api-key',
     'x-client-request-id',
   ],
   exposedHeaders: [

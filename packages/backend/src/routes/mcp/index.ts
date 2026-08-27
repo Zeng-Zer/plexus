@@ -183,6 +183,9 @@ async function streamUpstreamResponse(
     headers['Cache-Control'] = 'no-cache';
   }
   headers['X-Accel-Buffering'] = 'no';
+  if (!Object.keys(headers).some((key) => key.toLowerCase() === 'connection')) {
+    headers['Connection'] = 'keep-alive';
+  }
 
   // Take over the response lifecycle so Fastify does not also try to send a
   // reply, and write the head directly so it reaches the client immediately

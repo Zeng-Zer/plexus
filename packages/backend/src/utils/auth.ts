@@ -155,8 +155,11 @@ export function createAuthHook(options: { allowQueryKey?: boolean } = {}) {
           request.headers.authorization = `Bearer ${authHeader}`;
         }
       } else {
-        // No Authorization header, try x-api-key or x-goog-api-key
-        let apiKey = request.headers['x-api-key'] || request.headers['x-goog-api-key'];
+        // No Authorization header — accept OpenAI, Gemini, and Azure key headers
+        let apiKey =
+          request.headers['x-api-key'] ||
+          request.headers['x-goog-api-key'] ||
+          request.headers['api-key'];
 
         if (allowQueryKey && !apiKey && request.query && typeof request.query === 'object') {
           apiKey = (request.query as any).key;
@@ -164,7 +167,7 @@ export function createAuthHook(options: { allowQueryKey?: boolean } = {}) {
 
         if (typeof apiKey === 'string') {
           request.headers.authorization = `Bearer ${apiKey}`;
-          logger.silly(`Set authorization from x-api-key/x-goog-api-key`);
+          logger.silly(`Set authorization from x-api-key/x-goog-api-key/api-key`);
         }
       }
     },

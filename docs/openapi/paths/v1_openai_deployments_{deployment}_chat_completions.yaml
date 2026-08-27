@@ -1,0 +1,65 @@
+parameters:
+  - in: path
+    name: deployment
+    required: true
+    schema:
+      type: string
+      example: grok-4.6
+    description: |
+      Azure deployment name. Plexus treats this as the incoming model alias
+      and uses it when the JSON body omits `model`.
+  - in: query
+    name: api-version
+    required: false
+    schema:
+      type: string
+      example: 2025-01-01-preview
+    description: Accepted for Azure OpenAI SDK compatibility and ignored.
+post:
+  tags:
+    - Inference — Chat
+  summary: Azure-compatible chat completion (`/v1` base URL)
+  description: |
+    Drop-in for Azure OpenAI clients whose endpoint already includes `/v1`,
+    producing `POST /v1/openai/deployments/{deployment}/chat/completions`.
+
+    Same request and response body as `POST /v1/chat/completions`. The
+    `{deployment}` path segment is the Plexus alias. `api-version` is ignored.
+    Authenticate with `api-key`, `Authorization: Bearer`, or `x-api-key`.
+  operationId: postV1OpenaiDeploymentsDeploymentChatCompletions
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema:
+          $ref: ../components/schemas/ChatCompletionRequest.yaml
+        examples:
+          azure_sdk:
+            summary: Azure SDK-style call (model taken from the path)
+            value:
+              model: grok-4.6
+              messages:
+                - role: user
+                  content: Hello!
+  responses:
+    '200':
+      description: |
+        A non-streamed JSON response or, when `stream: true`,
+        a `text/event-stream` of `data: {...}` frames terminated by
+        `data: [DONE]`.
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas/ChatCompletionResponse.yaml
+        text/event-stream:
+          schema:
+            type: string
+            description: SSE frames of Chat Completions deltas.
+    '400':
+      $ref: ../components/responses/BadRequestOpenAI.yaml
+    '401':
+      $ref: ../components/responses/AuthError.yaml
+    '429':
+      $ref: ../components/responses/QuotaExceeded.yaml
+    5XX:
+      $ref: ../components/responses/ProviderError.yaml

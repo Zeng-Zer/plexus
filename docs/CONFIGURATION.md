@@ -671,9 +671,16 @@ Clients can provide credentials via:
 - `Authorization: Bearer <secret>`
 - `Authorization: <secret>` (prefix added automatically)
 - `x-api-key: <secret>`
+- `x-goog-api-key: <secret>`
+- `api-key: <secret>` (Azure OpenAI SDKs)
 - `?key=<secret>` query parameter
 
 The `/v1/models` endpoint is public (no auth required).
+
+Azure OpenAI clients can post to
+`/v1/openai/deployments/{deployment}/chat/completions` or
+`/openai/deployments/{deployment}/chat/completions`. The `{deployment}`
+segment is the Plexus alias. `api-version` is accepted and ignored.
 
 ### Dynamic Attribution
 

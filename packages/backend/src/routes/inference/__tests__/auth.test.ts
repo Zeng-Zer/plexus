@@ -135,6 +135,22 @@ describe('Auth Middleware', () => {
     expect(lastCall[0].clientRequestId).toBe('client-request-123');
   });
 
+  it('should allow request with api-key header', async () => {
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        'api-key': 'sk-valid-key',
+        'content-type': 'application/json',
+      },
+      payload: {
+        model: 'gpt-4',
+        messages: [],
+      },
+    });
+    expect(response.statusCode).toBe(200);
+  });
+
   it('should allow request with x-api-key header', async () => {
     const response = await fastify.inject({
       method: 'POST',

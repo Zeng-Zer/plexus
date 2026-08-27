@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { logger } from '../../utils/logger';
 import { Dispatcher } from '../../services/dispatch/dispatcher';
 import { OpenAITransformer } from '../../transformers';
@@ -16,6 +16,7 @@ import { wireStallDetection, getGlobalStallConfig } from '../../utils/stall';
 import { sanitizeHeaders } from '../../utils/sanitize-headers';
 import { CLIENT_REQUEST_ID_HEADER, getClientRequestId } from '../../utils/client-request-id';
 import { getCacheRoutingHeaders } from '../../utils/cache-routing-headers';
+import { applyAzureDeploymentModel } from './azure-deployment';
 
 export async function registerChatRoute(
   fastify: FastifyInstance,
@@ -23,13 +24,7 @@ export async function registerChatRoute(
   usageStorage: UsageStorageService,
   quotaEnforcer?: QuotaEnforcer
 ) {
-  /**
-   * POST /v1/chat/completions
-   * OpenAI Compatible Endpoint.
-   * Translates OpenAI format to internal Unified format, dispatches to target,
-   * and translates the response back to OpenAI format.
-   */
-  fastify.post('/v1/chat/completions', async (request, reply) => {
+  const handleChatRequest = async (request: FastifyRequest, reply: FastifyReply) => {
     const requestId = crypto.randomUUID();
     const clientRequestId = getClientRequestId(request.headers);
     reply.header('x-request-id', requestId);
@@ -51,7 +46,7 @@ export async function registerChatRoute(
 
     let earlyDisconnect: ReturnType<typeof wireEarlyDisconnectDetection> | undefined;
     try {
-      const body = request.body as any;
+      const body = applyAzureDeploymentModel(request);
       usageRecord.incomingModelAlias = body.model;
       // Use the key name identified by the auth middleware, not the raw secret
       usageRecord.apiKey = (request as any).keyName;
@@ -202,5 +197,16 @@ export async function registerChatRoute(
         },
       });
     }
-  });
+  };
+
+  /**
+   * POST /v1/chat/completions — OpenAI-compatible chat.
+   * POST /v1/openai/deployments/:deployment/chat/completions — Azure-style
+   *   (base URL already includes /v1).
+   * POST /openai/deployments/:deployment/chat/completions — classic Azure.
+   * `api-version` is accepted and ignored. The deployment name is the alias.
+   */
+  fastify.post('/v1/chat/completions', handleChatRequest);
+  fastify.post('/v1/openai/deployments/:deployment/chat/completions', handleChatRequest);
+  fastify.post('/openai/deployments/:deployment/chat/completions', handleChatRequest);
 }

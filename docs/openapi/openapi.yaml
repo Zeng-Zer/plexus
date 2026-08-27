@@ -7,8 +7,8 @@ info:
     cooldowns, and an admin management plane.
   description: >-
     Plexus is a unified API gateway for LLM providers. It exposes
-    OpenAI-, Anthropic-, and Gemini-compatible endpoints and routes
-    requests to any backend provider, handling request/response
+    OpenAI-, Azure OpenAI-, Anthropic-, and Gemini-compatible endpoints and
+    routes requests to any backend provider, handling request/response
     transformation automatically.
 
 
@@ -18,9 +18,10 @@ info:
     Plexus exposes three logical surfaces:
 
 
-    1. **Inference APIs** (`/v1/*`, `/v1beta/*`) — OpenAI-, Anthropic-, and
-       Gemini-compatible endpoints that transparently fan out to configured
-       upstream providers. Authenticated with a Plexus API key (see the
+    1. **Inference APIs** (`/v1/*`, `/v1beta/*`, `/openai/deployments/*`) —
+       OpenAI-, Azure OpenAI-, Anthropic-, and Gemini-compatible endpoints
+       that transparently fan out to configured upstream providers.
+       Authenticated with a Plexus API key (see the
        [`PlexusApiKey`](#/components/securitySchemes/PlexusApiKey) security
        scheme).
 
@@ -59,6 +60,7 @@ info:
     | `Authorization` header (no prefix) | `Authorization: sk-my-key` (server prepends `Bearer`) |
     | `x-api-key` header | `x-api-key: sk-my-key` |
     | `x-goog-api-key` header | `x-goog-api-key: sk-my-key` |
+    | `api-key` header | `api-key: sk-my-key` (Azure OpenAI SDKs) |
     | `?key=` query parameter | `GET /v1/models?key=sk-my-key` |
 
 
@@ -359,6 +361,10 @@ paths:
     $ref: paths/health.yaml
   /v1/chat/completions:
     $ref: paths/v1_chat_completions.yaml
+  /v1/openai/deployments/{deployment}/chat/completions:
+    $ref: paths/v1_openai_deployments_{deployment}_chat_completions.yaml
+  /openai/deployments/{deployment}/chat/completions:
+    $ref: paths/openai_deployments_{deployment}_chat_completions.yaml
   /v1/messages:
     $ref: paths/v1_messages.yaml
   /v1/responses:
@@ -607,7 +613,7 @@ components:
       scheme: bearer
       description: |
         Plexus API key. The server also accepts the same value in
-        `x-api-key`, `x-goog-api-key`, or the `?key=` query string.
+        `x-api-key`, `x-goog-api-key`, `api-key`, or the `?key=` query string.
         Suffix the key with `:label` (e.g. `sk-abc:copilot`) to attach a
         dynamic attribution label.
     AdminKey:

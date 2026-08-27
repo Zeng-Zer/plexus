@@ -11,11 +11,11 @@
   <a href="docs/TESTING.md">Testing</a>
 </p>
 
-Plexus sits in front of your LLM providers so clients can use one consistent API while you choose how requests are translated, routed, observed, and recovered. It supports OpenAI, Anthropic, Gemini, OpenAI-compatible providers, OAuth-backed subscriptions, and streamable HTTP MCP servers.
+Plexus sits in front of your LLM providers so clients can use one consistent API while you choose how requests are translated, routed, observed, and recovered. It supports OpenAI, Azure OpenAI clients, Anthropic, Gemini, OpenAI-compatible providers, OAuth-backed subscriptions, and streamable HTTP MCP servers.
 
 ## Why Plexus
 
-- **Keep client code stable.** Accept OpenAI Chat Completions and Responses, Anthropic Messages, Gemini native requests, embeddings, audio, images, streaming, and tool use.
+- **Keep client code stable.** Accept OpenAI Chat Completions and Responses, Azure OpenAI deployment URLs, Anthropic Messages, Gemini native requests, embeddings, audio, images, streaming, and tool use.
 - **Route on your terms.** Map aliases to one or more targets with `random`, `in_order`, `cost`, `performance`, `latency`, `usage`, `quota`, or `e2e_performance` selection.
 - **Operate with evidence.** Inspect request logs, tokens, cost, latency, live throughput, provider health, and per-key quotas from the dashboard.
 - **Stay resilient.** Apply exponential cooldowns, fail over failed providers, detect stalled streams, and use vision fallthrough for non-vision targets.
