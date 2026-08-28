@@ -11,6 +11,7 @@ export interface StoredCursorConversation {
   checkpoint: Uint8Array | null;
   blobs: Map<string, Uint8Array>;
   historyFingerprint: string;
+  systemPromptHash: string;
   lastAccessMs: number;
 }
 
@@ -19,6 +20,7 @@ export interface CursorConversationCommit {
   checkpoint: Uint8Array | null;
   blobs: Map<string, Uint8Array>;
   historyFingerprint: string;
+  systemPromptHash: string;
 }
 
 interface PersistedCursorConversation {
@@ -27,6 +29,7 @@ interface PersistedCursorConversation {
   checkpoint: string | null;
   blobs: Record<string, string>;
   historyFingerprint: string;
+  systemPromptHash?: string;
   lastAccessMs: number;
 }
 
@@ -94,6 +97,7 @@ function writePersisted(storeKey: string, stored: StoredCursorConversation): voi
     checkpoint: stored.checkpoint ? encodeBytes(stored.checkpoint) : null,
     blobs: Object.fromEntries([...stored.blobs].map(([id, data]) => [id, encodeBytes(data)])),
     historyFingerprint: stored.historyFingerprint,
+    systemPromptHash: stored.systemPromptHash,
     lastAccessMs: stored.lastAccessMs,
   };
   const tmp = `${path}.${process.pid}.tmp`;
@@ -125,6 +129,7 @@ function readPersisted(storeKey: string, now = Date.now()): StoredCursorConversa
       checkpoint,
       blobs,
       historyFingerprint: parsed.historyFingerprint ?? '',
+      systemPromptHash: parsed.systemPromptHash ?? '',
       lastAccessMs: parsed.lastAccessMs,
     };
   } catch {
@@ -246,6 +251,7 @@ export function commitCursorConversation(storeKey: string, commit: CursorConvers
     checkpoint,
     blobs,
     historyFingerprint: commit.historyFingerprint,
+    systemPromptHash: commit.systemPromptHash,
     lastAccessMs: Date.now(),
   };
   conversations.set(storeKey, stored);
@@ -261,6 +267,7 @@ export function rotateCursorConversation(
     checkpoint: null,
     blobs: new Map(),
     historyFingerprint: '',
+    systemPromptHash: '',
     lastAccessMs: Date.now(),
   };
   conversations.set(storeKey, stored);

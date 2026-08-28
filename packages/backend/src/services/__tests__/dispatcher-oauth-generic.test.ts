@@ -49,7 +49,7 @@ function genericOAuthConfig() {
       Xai: {
         type: 'oauth',
         api_base_url: 'oauth://',
-        oauth_provider: 'xai',
+        oauth_provider: 'openrouter',
         oauth_account: 'test-account',
         models: {
           // Empty access_via mirrors real deployments: the API type is
@@ -104,7 +104,7 @@ describe('genericOAuthApiType', () => {
   });
 });
 
-describe('Generic OAuth dispatch (non-native providers, e.g. xai)', () => {
+describe('Generic OAuth dispatch (non-native providers, e.g. openrouter)', () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -154,7 +154,7 @@ describe('Generic OAuth dispatch (non-native providers, e.g. xai)', () => {
     setConfigForTesting(genericOAuthConfig());
     const getApiKeySpy = registerSpy(OAuthAuthManager.getInstance(), 'getApiKey');
     await new Dispatcher().dispatch(chatRequest());
-    expect(getApiKeySpy).toHaveBeenCalledWith('xai', 'test-account');
+    expect(getApiKeySpy).toHaveBeenCalledWith('openrouter', 'test-account');
   });
 
   test('raises a clear error when the model has no known wire API, instead of mis-routing', async () => {

@@ -16,6 +16,7 @@ import {
 import { resetCursorConversationStore } from '../cursor-conversation-store';
 import {
   buildCursorRequest,
+  CURSOR_CLIENT_IDENTITY,
   CURSOR_SDK_TRANSPORT_URL,
   executeCursorSdkRequest,
   normalizeCursorMessages,
@@ -57,7 +58,7 @@ describe('Cursor protocol executor', () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
-  it('maps developer messages to system without injecting text', () => {
+  it('overlays system and developer instructions as a user rules message', () => {
     expect(normalizeCursorMessages(payload)).toEqual([
       { role: 'system', content: 'Be concise.' },
       { role: 'system', content: 'Use plain text.' },
@@ -71,22 +72,37 @@ describe('Cursor protocol executor', () => {
     );
 
     expect(roots).toEqual([
-      { role: 'system', content: 'Be concise.' },
-      { role: 'system', content: 'Use plain text.' },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: `<rules>\nBe concise.\n\nUse plain text.\n\n${CURSOR_CLIENT_IDENTITY}\n</rules>`,
+          },
+        ],
+      },
     ]);
     expect(JSON.stringify(roots)).not.toContain('Respond only');
+    expect(JSON.stringify(roots)).not.toContain('"role":"system"');
     expect(run.action!.action).toMatchObject({
       case: 'userMessageAction',
       value: { userMessage: { text: 'Hello' } },
     });
 
-    const noSystem = decodeRun(
-      buildCursorRequest({
-        model: 'cursor-model',
-        messages: [{ role: 'user', content: 'Hello' }],
-      }).request
+    const noSystem = buildCursorRequest({
+      model: 'cursor-model',
+      messages: [{ role: 'user', content: 'Hello' }],
+    });
+    const noSystemRoots = decodeRun(noSystem.request).conversationState!.rootPromptMessagesJson.map(
+      (id) =>
+        JSON.parse(new TextDecoder().decode(noSystem.blobs.get(Buffer.from(id).toString('hex'))))
     );
-    expect(noSystem.conversationState!.rootPromptMessagesJson).toEqual([]);
+    expect(noSystemRoots).toEqual([
+      {
+        role: 'user',
+        content: [{ type: 'text', text: `<rules>\n${CURSOR_CLIENT_IDENTITY}\n</rules>` }],
+      },
+    ]);
   });
 
   it('attaches Hindsight user injections to the current turn instead of history roots', () => {
@@ -107,7 +123,14 @@ describe('Cursor protocol executor', () => {
       JSON.parse(new TextDecoder().decode(built.blobs.get(Buffer.from(id).toString('hex'))))
     );
 
-    expect(roots).toEqual([{ role: 'system', content: 'Be concise.' }]);
+    expect(roots).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: `<rules>\nBe concise.\n\n${CURSOR_CLIENT_IDENTITY}\n</rules>` },
+        ],
+      },
+    ]);
     expect(run.action!.action).toMatchObject({
       case: 'userMessageAction',
       value: {
@@ -417,6 +440,77 @@ describe('Cursor protocol executor', () => {
     expect(run.action?.action.value).toMatchObject({ userMessage: { text: 'Second' } });
   });
 
+  it('appends a rules overlay when a reused checkpoint has a changed system prompt', () => {
+    const checkpoint = toBinary(
+      ConversationStateStructureSchema,
+      create(ConversationStateStructureSchema, { clientName: 'cached-turn' })
+    );
+    const built = buildCursorRequest(
+      {
+        model: 'cursor-model',
+        messages: [
+          { role: 'system', content: 'Be concise.' },
+          { role: 'user', content: 'First' },
+          { role: 'assistant', content: 'Answer' },
+          { role: 'user', content: 'Second' },
+        ],
+      },
+      { conversationId: 'conv-stable', checkpoint, systemPromptHash: 'old-hash' }
+    );
+    const run = decodeRun(built.request);
+    const roots = run.conversationState!.rootPromptMessagesJson.map((id) =>
+      JSON.parse(new TextDecoder().decode(built.blobs.get(Buffer.from(id).toString('hex'))))
+    );
+
+    expect(built.reusedCheckpoint).toBe(true);
+    expect(built.refreshedSystemPrompt).toBe(true);
+    expect(run.conversationState?.clientName).toBe('cached-turn');
+    expect(roots).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: `<rules>\nBe concise.\n\n${CURSOR_CLIENT_IDENTITY}\n</rules>` },
+        ],
+      },
+    ]);
+  });
+
+  it('does not append a rules overlay when the checkpoint system prompt is unchanged', () => {
+    const first = buildCursorRequest({
+      model: 'cursor-model',
+      messages: [
+        { role: 'system', content: 'Be concise.' },
+        { role: 'user', content: 'Hello' },
+      ],
+    });
+    const checkpoint = toBinary(
+      ConversationStateStructureSchema,
+      create(ConversationStateStructureSchema, { clientName: 'cached-turn' })
+    );
+    const built = buildCursorRequest(
+      {
+        model: 'cursor-model',
+        messages: [
+          { role: 'system', content: 'Be concise.' },
+          { role: 'user', content: 'Hello' },
+          { role: 'assistant', content: 'Answer' },
+          { role: 'user', content: 'Follow up' },
+        ],
+      },
+      {
+        conversationId: 'conv-stable',
+        checkpoint,
+        systemPromptHash: first.systemPromptHash,
+      }
+    );
+    const run = decodeRun(built.request);
+
+    expect(built.reusedCheckpoint).toBe(true);
+    expect(built.refreshedSystemPrompt).toBe(false);
+    expect(run.conversationState?.clientName).toBe('cached-turn');
+    expect(run.conversationState?.rootPromptMessagesJson).toEqual([]);
+  });
+
   it('rebuilds tool-result resumes even when a checkpoint is present', () => {
     const checkpoint = toBinary(
       ConversationStateStructureSchema,
@@ -645,6 +739,7 @@ describe('Cursor protocol executor', () => {
     const secondRun = decodeWrittenRun(secondRequest.write);
     expect(secondRun.conversationId).toBe(firstRun.conversationId);
     expect(secondRun.conversationState?.clientName).toBe('cached-turn');
+    expect(secondRun.conversationState?.rootPromptMessagesJson).toHaveLength(1);
     expect(secondRun.action?.action).toMatchObject({
       case: 'userMessageAction',
       value: { userMessage: { text: 'Follow up' } },

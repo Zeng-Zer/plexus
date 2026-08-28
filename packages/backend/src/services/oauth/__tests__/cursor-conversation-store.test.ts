@@ -126,6 +126,7 @@ describe('Cursor conversation store keys', () => {
       checkpoint: new Uint8Array([1, 2, 3]),
       blobs: new Map([['blob-1', new Uint8Array([9])]]),
       historyFingerprint: 'fp-1',
+      systemPromptHash: 'sys-1',
     });
 
     clearCursorConversationMemory();
@@ -134,5 +135,6 @@ describe('Cursor conversation store keys', () => {
     expect([...reloaded!.checkpoint!]).toEqual([1, 2, 3]);
     expect([...reloaded!.blobs.get('blob-1')!]).toEqual([9]);
     expect(reloaded?.historyFingerprint).toBe('fp-1');
+    expect(reloaded?.systemPromptHash).toBe('sys-1');
   });
 });

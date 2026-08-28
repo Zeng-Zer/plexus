@@ -155,12 +155,15 @@ interface CursorRunSession {
   latestCheckpoint?: Uint8Array;
   assistantText?: string;
   assistantToolCalls?: OpenAIToolCall[];
+  systemPromptHash?: string;
 }
 
 export interface CursorRequestReuse {
   conversationId?: string;
   checkpoint?: Uint8Array | null;
   existingBlobs?: Map<string, Uint8Array>;
+  /** Hash of the system/developer text last published onto this conversation. */
+  systemPromptHash?: string;
 }
 
 interface CursorTransport {
@@ -312,14 +315,41 @@ export function normalizeCursorMessages(payload: any): OpenAIMessage[] {
   });
 }
 
+function collectCursorSystemPrompt(messages: OpenAIMessage[]): string {
+  return messages
+    .filter((message) => message.role === 'system' || message.role === 'developer')
+    .map((message) => (typeof message.content === 'string' ? message.content.trim() : ''))
+    .filter((text) => text.length > 0)
+    .join('\n\n');
+}
+
+/** Counter-instruction so Cursor's injected agent prompt does not own identity. */
+export const CURSOR_CLIENT_IDENTITY = 'You are Pi, not Cursor IDE.';
+
+function cursorRulesPrompt(systemPrompt: string): string {
+  return systemPrompt ? `${systemPrompt}\n\n${CURSOR_CLIENT_IDENTITY}` : CURSOR_CLIENT_IDENTITY;
+}
+
+export function hashCursorSystemPrompt(messages: OpenAIMessage[]): string {
+  return createHash('sha256')
+    .update(cursorRulesPrompt(collectCursorSystemPrompt(messages)))
+    .digest('hex')
+    .slice(0, 32);
+}
+
+/** Cursor discards `role: system` in root_prompt_messages_json and substitutes its own prompt. */
+function systemPromptRootMessage(systemPrompt: string): unknown {
+  return {
+    role: 'user',
+    content: [{ type: 'text', text: `<rules>\n${cursorRulesPrompt(systemPrompt)}\n</rules>` }],
+  };
+}
+
 function jsonRootMessage(message: OpenAIMessage): unknown {
   const role = message.role === 'tool' ? 'user' : message.role;
   return {
     role,
-    content:
-      role === 'system'
-        ? (message.content as string)
-        : [{ type: 'text', text: message.content as string }],
+    content: [{ type: 'text', text: message.content as string }],
     ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
     ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
   };
@@ -567,7 +597,9 @@ export function buildCursorRequest(
   tools: McpToolDefinition[];
   conversationId: string;
   reusedCheckpoint: boolean;
+  refreshedSystemPrompt: boolean;
   historyFingerprint: string;
+  systemPromptHash: string;
 } {
   if (
     payload?.plexus_cursor_fast !== undefined &&
@@ -588,9 +620,12 @@ export function buildCursorRequest(
   const conversationId = reuse.conversationId?.trim() || crypto.randomUUID();
   const userTurn = joinCursorUserTurn(trailingInjections, messages[lastUser]!);
   const tools = clientTools(payload);
+  const systemPrompt = collectCursorSystemPrompt(durableHistory);
+  const systemPromptHash = hashCursorSystemPrompt(durableHistory);
 
   let conversationState;
   let reusedCheckpoint = false;
+  let refreshedSystemPrompt = false;
   if (!hasMessagesAfterUser && reuse.checkpoint && reuse.checkpoint.byteLength > 0) {
     if (reuse.checkpoint.byteLength > MAX_CURSOR_CHECKPOINT_BYTES) {
       conversationState = undefined;
@@ -603,12 +638,28 @@ export function buildCursorRequest(
       }
     }
   }
+  if (conversationState && reuse.systemPromptHash !== systemPromptHash) {
+    conversationState.rootPromptMessagesJson = [
+      ...conversationState.rootPromptMessagesJson,
+      storeBlob(
+        new TextEncoder().encode(JSON.stringify(systemPromptRootMessage(systemPrompt))),
+        blobs
+      ),
+    ];
+    refreshedSystemPrompt = true;
+  }
   if (!conversationState) {
-    const roots = durableHistory
-      .filter((message) => ['system', 'user', 'assistant', 'tool'].includes(message.role))
-      .map((message) =>
-        storeBlob(new TextEncoder().encode(JSON.stringify(jsonRootMessage(message))), blobs)
-      );
+    const roots = [
+      storeBlob(
+        new TextEncoder().encode(JSON.stringify(systemPromptRootMessage(systemPrompt))),
+        blobs
+      ),
+      ...durableHistory
+        .filter((message) => ['user', 'assistant', 'tool'].includes(message.role))
+        .map((message) =>
+          storeBlob(new TextEncoder().encode(JSON.stringify(jsonRootMessage(message))), blobs)
+        ),
+    ];
     conversationState = create(ConversationStateStructureSchema, {
       rootPromptMessagesJson: roots,
       turns: historyTurns(durableHistory, blobs),
@@ -653,7 +704,9 @@ export function buildCursorRequest(
     tools,
     conversationId,
     reusedCheckpoint,
+    refreshedSystemPrompt,
     historyFingerprint,
+    systemPromptHash,
   };
 }
 
@@ -706,6 +759,7 @@ function commitCompletedConversation(session: CursorRunSession): void {
         ...(session.assistantToolCalls?.length ? { tool_calls: session.assistantToolCalls } : {}),
       },
     ]),
+    systemPromptHash: session.systemPromptHash ?? '',
   });
 }
 
@@ -1462,7 +1516,14 @@ export async function executeCursorSdkRequest(
       conversationId,
       checkpoint: canReuseCheckpoint ? checkpoint : null,
       existingBlobs,
+      systemPromptHash: canReuseCheckpoint ? stored?.systemPromptHash : undefined,
     });
+    if (built.refreshedSystemPrompt) {
+      logger.debug('Cursor conversation refreshed system prompt overlay', {
+        conversationKey,
+        conversationId,
+      });
+    }
   } catch (error) {
     return unsupported(error instanceof Error ? error.message : String(error));
   }
@@ -1494,6 +1555,7 @@ export async function executeCursorSdkRequest(
     storeKey,
     conversationId: built.conversationId,
     requestMessages: normalizeCursorMessages(payload),
+    systemPromptHash: built.systemPromptHash,
   };
   sessionBlobs.set(session, built.blobs);
   sessionTools.set(session, built.tools);
