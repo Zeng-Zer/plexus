@@ -8,13 +8,13 @@ describe('CodexVersionService', () => {
 
   it('returns default version before fetch', () => {
     const service = CodexVersionService.getInstance();
-    expect(service.getVersion()).toBe('0.125.0');
+    expect(service.getVersion()).toBe('0.153.4');
   });
 
   it('returns default user-agent before fetch', () => {
     const service = CodexVersionService.getInstance();
     expect(service.getUserAgent()).toBe(
-      'codex_cli_rs/0.125.0 (Debian 13.0.0; x86_64) WindowsTerminal'
+      'codex_cli_rs/0.153.4 (Debian 13.0.0; x86_64) WindowsTerminal'
     );
   });
 
@@ -72,7 +72,7 @@ describe('CodexVersionService', () => {
     const service = CodexVersionService.getInstance();
     await service.fetchVersion();
 
-    expect(service.getVersion()).toBe('0.125.0');
+    expect(service.getVersion()).toBe('0.153.4');
   });
 
   it('falls back to default on non-ok response', async () => {
@@ -87,7 +87,7 @@ describe('CodexVersionService', () => {
     const service = CodexVersionService.getInstance();
     await service.fetchVersion();
 
-    expect(service.getVersion()).toBe('0.125.0');
+    expect(service.getVersion()).toBe('0.153.4');
   });
 
   it('falls back to default when tag_name is missing', async () => {
@@ -102,7 +102,7 @@ describe('CodexVersionService', () => {
     const service = CodexVersionService.getInstance();
     await service.fetchVersion();
 
-    expect(service.getVersion()).toBe('0.125.0');
+    expect(service.getVersion()).toBe('0.153.4');
   });
 
   it('handles rust-v prefix tag', async () => {
@@ -132,7 +132,7 @@ describe('CodexVersionService', () => {
     const service = CodexVersionService.getInstance();
     await service.fetchVersion();
 
-    expect(service.getVersion()).toBe('0.125.0');
+    expect(service.getVersion()).toBe('0.153.4');
   });
 
   it('uses correct GitHub API URL', async () => {

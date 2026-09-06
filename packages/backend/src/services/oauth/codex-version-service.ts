@@ -1,6 +1,6 @@
 import { logger } from '../../utils/logger';
 
-const DEFAULT_CODEX_VERSION = '0.125.0';
+const DEFAULT_CODEX_VERSION = '0.153.4';
 const GITHUB_RELEASES_URL = 'https://api.github.com/repos/openai/codex/releases/latest';
 
 interface GitHubRelease {
